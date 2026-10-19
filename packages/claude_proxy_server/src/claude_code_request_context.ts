@@ -15,7 +15,11 @@ export interface ClaudeCodeRequestContext {
 }
 
 const sessionIdPattern = /session_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/;
-const workingDirectoryPattern = /(?:Primary working directory|Working directory):\s*([^\s][^\n]*)/;
+/**
+ * Matches Claude Code's environment line, " - Primary working directory: /absolute/path", only at the start of a line.
+ * Quoted text, such as a CLAUDE.md that mentions the line, does not match.
+ */
+const workingDirectoryPattern = /^ *-? *(?:Primary working directory|Working directory): (\/[^\n]*)$/m;
 const systemReminderPattern = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
 
 /** Reads the model, session ID, project path and last user message from a Messages API request sent by Claude Code. */

@@ -46,7 +46,7 @@ const claudeCodeRequestBody = {
       role: 'user',
       content: [
         { type: 'tool_result', tool_use_id: 'toolu_0', content: [{ type: 'text', text: 'grep output: giraffe.ts:12' }] },
-        { type: 'text', text: '<system-reminder>ignore</system-reminder>Find the zebra bug' },
+        { type: 'text', text: '<system-reminder>The `Primary working directory:` line is quoted here.</system-reminder>Find the zebra bug' },
       ],
     },
     { role: 'system', content: [{ type: 'text', text: '# Environment\n - Primary working directory: /Users/example_user/Development/example_project\n' }] },
@@ -174,7 +174,7 @@ describe('claude-proxy', () => {
     for (const searchText of ['zebra', 'giraffe', 'a.txt']) {
       assert.equal((await readApi(`proxied-requests?searchText=${searchText}`)).length, 1, `search for ${searchText}`);
     }
-    assert.equal((await readApi('proxied-requests?searchText=ignore')).length, 0);
+    assert.equal((await readApi('proxied-requests?searchText=quoted')).length, 0);
     assert.equal((await readApi('routing-status')).subscriptionWeeklyUtilization, 0.5);
   });
 
