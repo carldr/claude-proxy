@@ -2,6 +2,8 @@
 
 claude-proxy is a local proxy between Claude Code and the Anthropic API. It records every request in SQLite. When your weekly subscription limit is almost used, it sends Claude Code's subscription traffic to an API key. Claude Code does not see the change.
 
+![The claude-proxy web UI: the routing panel with weekly subscription usage, and the request log](docs/web_ui_requests.png)
+
 ## How it works
 
 1. Claude Code sends each request to `http://127.0.0.1:4100`, because `ANTHROPIC_BASE_URL` points there.
