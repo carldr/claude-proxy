@@ -50,7 +50,7 @@ export function ProxiedRequestDetailPanel({ proxiedRequestId, findRouteAppearanc
     <aside className="request-detail" aria-label={`Request ${proxiedRequest.id}`}>
       <div className="request-detail-heading">
         <h2>
-          {proxiedRequest.http_method} {proxiedRequest.request_path}
+          Request {proxiedRequest.id}: {proxiedRequest.http_method} {proxiedRequest.request_path}
         </h2>
         <button className="plain-button" onClick={onClose}>
           Close

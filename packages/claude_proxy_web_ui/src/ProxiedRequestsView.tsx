@@ -146,6 +146,7 @@ export function ProxiedRequestsView({ filters, onFiltersChange, findRouteAppeara
             <table className="data-table">
               <thead>
                 <tr>
+                  <th className="numeric">ID</th>
                   <th>Time</th>
                   <th>Route</th>
                   <th>Model</th>
@@ -168,6 +169,7 @@ export function ProxiedRequestsView({ filters, onFiltersChange, findRouteAppeara
                     onClick={() => setSelectedRequestId(proxiedRequest.id)}
                     onKeyDown={(keyEvent) => keyEvent.key === 'Enter' && setSelectedRequestId(proxiedRequest.id)}
                   >
+                    <td className="numeric muted">{proxiedRequest.id}</td>
                     <td>{formatTimestamp(proxiedRequest.started_at)}</td>
                     <td>
                       <span className="route-cell" title={proxiedRequest.route_name ?? 'Not routed yet'}>
