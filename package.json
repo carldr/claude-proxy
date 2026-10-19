@@ -1,0 +1,16 @@
+{
+  "name": "claude-proxy",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.5.1",
+  "scripts": {
+    "start": "node packages/claude_proxy_server/src/main.ts",
+    "build": "pnpm --filter claude_proxy_web_ui build && sh macos/claude_proxy_menu_bar/build_claude_proxy_menu_bar.sh",
+    "dev:server": "node --watch packages/claude_proxy_server/src/main.ts",
+    "dev:web_ui": "pnpm --filter claude_proxy_web_ui dev",
+    "test": "node --test 'packages/claude_proxy_server/test/*.test.ts'",
+    "typecheck": "pnpm -r typecheck",
+    "install_launchd_agents": "sh launchd/install_launchd_agents.sh",
+    "uninstall_launchd_agents": "sh launchd/uninstall_launchd_agents.sh"
+  }
+}

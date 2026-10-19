@@ -1,0 +1,4 @@
+node_modules/
+dist/
+macos/claude_proxy_menu_bar/build/
+.DS_Store
