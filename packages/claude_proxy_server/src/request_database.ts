@@ -16,6 +16,7 @@ export interface StartedProxiedRequest {
   requestHeadersJson: string;
   requestBody: Buffer;
   lastUserMessageText: string;
+  lastUserMessageToolResultText: string;
 }
 
 export interface CompletedProxiedRequest {
@@ -35,6 +36,8 @@ export interface CompletedProxiedRequest {
   responseHeadersJson: string | null;
   responseBody: string | null;
   responseText: string;
+  /** The tool calls and thinking of the response. */
+  responseToolText: string;
 }
 
 export interface UpstreamAttempt {
@@ -132,8 +135,10 @@ export class RequestDatabase {
       );
       CREATE INDEX IF NOT EXISTS upstream_attempts_proxied_request_id ON upstream_attempts (proxied_request_id);
 
-      -- rowid is proxied_requests.id. user_text is the last user message; response_text is the response text.
-      CREATE VIRTUAL TABLE IF NOT EXISTS proxied_request_search USING fts5 (user_text, response_text);
+      -- rowid is proxied_requests.id. Each request repeats the whole conversation, so the index holds only what
+      -- is new in each request: user_text is the last user message; tool_text is the tool results in that
+      -- message plus the tool calls and thinking of the response; response_text is the text of the response.
+      CREATE VIRTUAL TABLE IF NOT EXISTS proxied_request_search USING fts5 (user_text, tool_text, response_text);
 
       CREATE TABLE IF NOT EXISTS proxy_settings (
         setting_name TEXT PRIMARY KEY,
@@ -164,8 +169,8 @@ export class RequestDatabase {
       );
     const proxiedRequestId = Number(insertResult.lastInsertRowid);
     this.database
-      .prepare('INSERT INTO proxied_request_search (rowid, user_text, response_text) VALUES (?, ?, ?)')
-      .run(proxiedRequestId, startedRequest.lastUserMessageText, '');
+      .prepare('INSERT INTO proxied_request_search (rowid, user_text, tool_text, response_text) VALUES (?, ?, ?, ?)')
+      .run(proxiedRequestId, startedRequest.lastUserMessageText, startedRequest.lastUserMessageToolResultText, '');
     return proxiedRequestId;
   }
 
@@ -198,8 +203,12 @@ export class RequestDatabase {
         proxiedRequestId,
       );
     this.database
-      .prepare('UPDATE proxied_request_search SET response_text = ? WHERE rowid = ?')
-      .run(completedRequest.responseText, proxiedRequestId);
+      .prepare(
+        `UPDATE proxied_request_search
+         SET response_text = ?, tool_text = CASE WHEN tool_text = '' THEN ? ELSE tool_text || char(10) || ? END
+         WHERE rowid = ?`,
+      )
+      .run(completedRequest.responseText, completedRequest.responseToolText, completedRequest.responseToolText, proxiedRequestId);
   }
 
   insertUpstreamAttempt(upstreamAttempt: UpstreamAttempt): void {
@@ -288,7 +297,7 @@ export class RequestDatabase {
     const requestRow = this.database
       .prepare(
         `SELECT ${proxiedRequestSummaryColumns}, r.request_headers_json, r.request_body_zstd, r.response_headers_json,
-                r.response_body_zstd, s.user_text, s.response_text
+                r.response_body_zstd, s.user_text, s.tool_text, s.response_text
          FROM proxied_requests r JOIN proxied_request_search s ON s.rowid = r.id
          WHERE r.id = ?`,
       )

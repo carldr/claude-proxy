@@ -7,6 +7,11 @@ export interface ClaudeCodeRequestContext {
   projectPath: string | null;
   /** The text of the last user message, without `<system-reminder>` blocks. Empty when that message holds only tool results. */
   lastUserMessageText: string;
+  /**
+   * The tool results in the last user message: file contents, command output, search results.
+   * Each tool result is the last user message of exactly one request, so indexing it there indexes it once.
+   */
+  lastUserMessageToolResultText: string;
 }
 
 const sessionIdPattern = /session_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/;
@@ -26,6 +31,7 @@ export function extractClaudeCodeRequestContext(
     sessionId: extractSessionId(requestHeaders, requestFields.metadata),
     projectPath: extractProjectPath(requestFields.system, messages),
     lastUserMessageText: extractLastUserMessageText(messages),
+    lastUserMessageToolResultText: extractLastUserMessageToolResultText(messages),
   };
 }
 
@@ -60,6 +66,15 @@ function extractLastUserMessageText(messages: Array<Record<string, unknown>>): s
   const lastUserMessage = messages.findLast((message) => message.role === 'user');
   if (!lastUserMessage) return '';
   return readContentText(lastUserMessage.content).replace(systemReminderPattern, '').trim();
+}
+
+function extractLastUserMessageToolResultText(messages: Array<Record<string, unknown>>): string {
+  const lastUserMessage = messages.findLast((message) => message.role === 'user');
+  if (!lastUserMessage || !Array.isArray(lastUserMessage.content)) return '';
+  return lastUserMessage.content
+    .filter((contentBlock) => contentBlock?.type === 'tool_result')
+    .map((toolResultBlock) => readContentText(toolResultBlock.content))
+    .join('\n');
 }
 
 /** Joins the text of a string content or of the `text` blocks of a content-block list. */

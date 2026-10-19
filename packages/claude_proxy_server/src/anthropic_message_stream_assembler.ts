@@ -115,6 +115,19 @@ export class AnthropicMessageStreamAssembler {
   }
 }
 
+/** Joins the tool calls and thinking of a response message: each `tool_use` input as JSON, and each `thinking` text. */
+export function readAssembledMessageToolText(message: AssembledMessage | null): string {
+  if (!message || !Array.isArray(message.content)) return '';
+  return message.content
+    .map((contentBlock) => {
+      if (contentBlock?.type === 'tool_use') return `${contentBlock.name} ${JSON.stringify(contentBlock.input)}`;
+      if (contentBlock?.type === 'thinking' && typeof contentBlock.thinking === 'string') return contentBlock.thinking;
+      return '';
+    })
+    .filter((blockText) => blockText !== '')
+    .join('\n');
+}
+
 /** Joins the `text` blocks of a response message. */
 export function readAssembledMessageText(message: AssembledMessage | null): string {
   if (!message || !Array.isArray(message.content)) return '';

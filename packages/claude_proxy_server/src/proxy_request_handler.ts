@@ -3,6 +3,7 @@ import { once } from 'node:events';
 import {
   AnthropicMessageStreamAssembler,
   readAssembledMessageText,
+  readAssembledMessageToolText,
   type AssembledMessage,
 } from './anthropic_message_stream_assembler.ts';
 import { subscriptionRouteName } from './api_key_routes_config.ts';
@@ -70,6 +71,7 @@ export async function handleProxyRequest(
       requestHeadersJson: JSON.stringify(redactCredentialHeaders(clientRequest.headers)),
       requestBody,
       lastUserMessageText: requestContext.lastUserMessageText,
+      lastUserMessageToolResultText: requestContext.lastUserMessageToolResultText,
     }),
   );
   const completeRecordedRequest = (completedRequest: CompletedProxiedRequest) => {
@@ -243,6 +245,7 @@ function summariseForwardedResponse(
     estimatedCostUsd: isMessageResponse && tokenUsage && modelTokenPrices ? estimateMessageCostUsd(modelTokenPrices, tokenUsage) : null,
     responseBody: forwardedResponse.responseBodyText,
     responseText: isMessageResponse ? readAssembledMessageText(responseFields as AssembledMessage) : '',
+    responseToolText: isMessageResponse ? readAssembledMessageToolText(responseFields as AssembledMessage) : '',
   };
 }
 
@@ -321,6 +324,7 @@ function emptyCompletedRequest(
     responseHeadersJson: null,
     responseBody: null,
     responseText: '',
+    responseToolText: '',
   };
 }
 
