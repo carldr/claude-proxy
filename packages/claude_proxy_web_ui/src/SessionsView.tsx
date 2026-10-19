@@ -49,7 +49,7 @@ export function SessionsView({ onShowSessionRequests }: { onShowSessionRequests:
               <tr key={session.session_id} data-clickable="true" tabIndex={0} onClick={() => onShowSessionRequests(session.session_id)}
                 onKeyDown={(keyEvent) => keyEvent.key === 'Enter' && onShowSessionRequests(session.session_id)}>
                 <td>{formatTimestamp(session.last_started_at)}</td>
-                <td title={session.project_path ?? ''}>{shortenProjectPath(session.project_path)}</td>
+                <td className="project-name" title={session.project_path ?? ''}>{shortenProjectPath(session.project_path)}</td>
                 <td className="prompt-preview" title={session.first_user_text ?? ''}>
                   {session.first_user_text}
                 </td>

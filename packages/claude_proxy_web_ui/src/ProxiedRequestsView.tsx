@@ -178,7 +178,7 @@ export function ProxiedRequestsView({ filters, onFiltersChange, findRouteAppeara
                       </span>
                     </td>
                     <td>{proxiedRequest.model ?? <span className="muted">{proxiedRequest.request_path}</span>}</td>
-                    <td title={proxiedRequest.project_path ?? ''}>{shortenProjectPath(proxiedRequest.project_path)}</td>
+                    <td className="project-name" title={proxiedRequest.project_path ?? ''}>{shortenProjectPath(proxiedRequest.project_path)}</td>
                     <td className="prompt-preview" title={proxiedRequest.user_text_preview ?? ''}>
                       {proxiedRequest.user_text_preview || <span className="muted">{proxiedRequest.stop_reason === null ? '' : 'Tool results'}</span>}
                     </td>

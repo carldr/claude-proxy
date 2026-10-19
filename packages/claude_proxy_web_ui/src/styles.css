@@ -350,6 +350,12 @@ a {
   white-space: nowrap;
 }
 
+.data-table .project-name {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .data-table .wrapping {
   white-space: normal;
   min-width: 240px;
