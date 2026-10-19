@@ -10,7 +10,11 @@ export default defineConfig({
         target: 'http://127.0.0.1:4100',
         changeOrigin: true,
         // claude-proxy rejects requests with a foreign Origin, and the Vite dev server is on another port.
-        configure: (httpProxy) => httpProxy.on('proxyReq', (proxyRequest) => proxyRequest.removeHeader('origin')),
+        // Remove the Origin only when it is the dev server's own, so other web pages are still rejected.
+        configure: (httpProxy) =>
+          httpProxy.on('proxyReq', (proxyRequest, clientRequest) => {
+            if (clientRequest.headers.origin === `http://${clientRequest.headers.host}`) proxyRequest.removeHeader('origin');
+          }),
       },
     },
   },
