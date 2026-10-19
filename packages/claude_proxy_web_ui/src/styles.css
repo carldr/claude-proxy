@@ -343,15 +343,17 @@ a {
   text-align: right;
 }
 
+/* width 100% with max-width 0 makes the prompt take the space the other columns leave, and truncate. */
 .data-table .prompt-preview {
-  max-width: 420px;
+  width: 100%;
+  max-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .data-table .project-name {
-  max-width: 160px;
+  max-width: 130px;
   overflow: hidden;
   text-overflow: ellipsis;
 }

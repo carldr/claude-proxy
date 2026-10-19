@@ -220,7 +220,6 @@ export function RequestStatus({ proxiedRequest }: { proxiedRequest: ProxiedReque
   return (
     <span className={isError ? 'status-error' : 'status-ok'} title={proxiedRequest.error_type ?? undefined}>
       {proxiedRequest.status_code ?? proxiedRequest.error_type}
-      {proxiedRequest.status_code !== null && proxiedRequest.error_type !== null && ` ${proxiedRequest.error_type}`}
     </span>
   );
 }
