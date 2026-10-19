@@ -148,14 +148,14 @@ export function ProxiedRequestsView({ filters, onFiltersChange, findRouteAppeara
                 <tr>
                   <th className="numeric">ID</th>
                   <th>Time</th>
-                  <th>Route</th>
+                  <th className="centred">Route</th>
                   <th>Model</th>
                   <th>Project</th>
                   <th>Prompt</th>
                   <th className="numeric">Input</th>
                   <th className="numeric">Output</th>
                   <th className="numeric">Cost</th>
-                  <th>Status</th>
+                  <th className="centred">Status</th>
                   <th className="numeric">Duration</th>
                 </tr>
               </thead>
@@ -171,7 +171,7 @@ export function ProxiedRequestsView({ filters, onFiltersChange, findRouteAppeara
                   >
                     <td className="numeric muted">{proxiedRequest.id}</td>
                     <td>{formatTimestamp(proxiedRequest.started_at)}</td>
-                    <td>
+                    <td className="centred">
                       <span className="route-cell" title={proxiedRequest.route_name ?? 'Not routed yet'}>
                         <RouteDot routeAppearance={findRouteAppearance(proxiedRequest.route_name)} />
                         {proxiedRequest.upstream_attempt_count > 1 && <span className="muted">{proxiedRequest.upstream_attempt_count} tries</span>}
@@ -185,7 +185,7 @@ export function ProxiedRequestsView({ filters, onFiltersChange, findRouteAppeara
                     <td className="numeric">{formatTokenCount(totalInputTokens(proxiedRequest))}</td>
                     <td className="numeric">{formatTokenCount(proxiedRequest.output_tokens)}</td>
                     <td className="numeric">{formatCostUsd(proxiedRequest.estimated_cost_usd)}</td>
-                    <td>
+                    <td className="centred">
                       <RequestStatus proxiedRequest={proxiedRequest} />
                     </td>
                     <td className="numeric">{formatDuration(proxiedRequest.duration_ms)}</td>
@@ -215,7 +215,7 @@ export function ProxiedRequestsView({ filters, onFiltersChange, findRouteAppeara
 }
 
 export function RequestStatus({ proxiedRequest }: { proxiedRequest: ProxiedRequestSummary }) {
-  if (proxiedRequest.completed_at === null) return <span className="muted">In progress</span>;
+  if (proxiedRequest.completed_at === null) return <span className="muted" title="In progress">-</span>;
   const isError = proxiedRequest.status_code === null || proxiedRequest.status_code >= 400 || proxiedRequest.error_type !== null;
   return (
     <span className={isError ? 'status-error' : 'status-ok'} title={proxiedRequest.error_type ?? undefined}>

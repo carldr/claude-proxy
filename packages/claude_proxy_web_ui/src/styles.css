@@ -352,6 +352,14 @@ a {
   white-space: nowrap;
 }
 
+.data-table .centred {
+  text-align: center;
+}
+
+.data-table .centred .route-cell {
+  justify-content: center;
+}
+
 .data-table .project-name {
   max-width: 130px;
   overflow: hidden;
