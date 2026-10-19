@@ -1,5 +1,6 @@
 import fs from 'node:fs';
-import http, { type Server } from 'node:http';
+import http, { type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { parseApiKeyRoutesConfig, type ApiKeyRoute } from './api_key_routes_config.ts';
 import { parseModelPricingConfig, type ModelPricingTable } from './model_pricing_config.ts';
@@ -29,6 +30,19 @@ export interface ClaudeProxyServer {
 
 const defaultConfigDirectory = path.join(import.meta.dirname, '..', 'default_config');
 
+/**
+ * Accepts a request only when its Host is 127.0.0.1 or localhost on the proxy's port, and when it has no Origin
+ * or the proxy's own Origin. This stops web pages, including pages that use DNS rebinding, from reading recorded
+ * requests or from sending requests that the proxy would send with an API key. Claude Code sends no Origin header.
+ */
+function isLocalRequest(clientRequest: IncomingMessage, httpServer: Server): boolean {
+  const proxyPort = (httpServer.address() as AddressInfo).port;
+  const localHosts = [`127.0.0.1:${proxyPort}`, `localhost:${proxyPort}`];
+  if (!localHosts.includes(clientRequest.headers.host ?? '')) return false;
+  const origin = clientRequest.headers.origin;
+  return origin === undefined || localHosts.some((localHost) => origin === `http://${localHost}`);
+}
+
 /** Creates the proxy server. The caller starts it with `httpServer.listen`. */
 export function createClaudeProxyServer(options: ClaudeProxyServerOptions): ClaudeProxyServer {
   fs.mkdirSync(options.claudeProxyDirectory, { recursive: true });
@@ -57,23 +71,28 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
   const routingState = new RoutingState(requestDatabase, () => apiKeyRoutesConfigFile.read().config);
   const subscriptionUsageMonitor = new SubscriptionUsageMonitor(routingState, options.anthropicBaseUrl);
 
-  const httpServer = http.createServer((clientRequest, clientResponse) => {
+  const dispatchRequest = async (clientRequest: IncomingMessage, clientResponse: ServerResponse): Promise<void> => {
     const requestPath = clientRequest.url ?? '/';
-    let handling: Promise<void> | void = undefined;
+    if (!isLocalRequest(clientRequest, httpServer)) {
+      clientResponse.writeHead(403, { 'content-type': 'text/plain' });
+      clientResponse.end('claude-proxy accepts requests only from this computer, addressed to 127.0.0.1 or localhost.');
+      return;
+    }
     if (requestPath.startsWith(webApiPathPrefix)) {
-      handling = handleWebApiRequest(clientRequest, clientResponse, {
+      await handleWebApiRequest(clientRequest, clientResponse, {
         requestDatabase,
         routingState,
         readConfigErrors,
+        checkSubscriptionUsage: () => subscriptionUsageMonitor.checkSubscriptionUsage(),
         claudeCodeProjectsDirectory: options.claudeCodeProjectsDirectory,
       });
     } else if (requestPath.startsWith(webUiPathPrefix)) {
-      handling = handleWebUiStaticFileRequest(clientRequest, clientResponse, options.webUiDistDirectory);
+      handleWebUiStaticFileRequest(clientRequest, clientResponse, options.webUiDistDirectory);
     } else if (clientRequest.method === 'GET' && (requestPath === '/' || requestPath === '/_proxy')) {
       clientResponse.writeHead(302, { location: webUiPathPrefix });
       clientResponse.end();
     } else {
-      handling = handleProxyRequest(clientRequest, clientResponse, {
+      await handleProxyRequest(clientRequest, clientResponse, {
         requestDatabase,
         routingState,
         readModelPricingTable: () => modelPricingConfigFile.read().config,
@@ -81,8 +100,11 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
         rememberSubscriptionAccessToken: (accessToken) => subscriptionUsageMonitor.rememberAccessToken(accessToken),
       });
     }
-    Promise.resolve(handling).catch((error: Error) => {
-      console.error(`claude-proxy failed on ${clientRequest.method} ${requestPath}: ${error.stack}`);
+  };
+
+  const httpServer = http.createServer((clientRequest, clientResponse) => {
+    dispatchRequest(clientRequest, clientResponse).catch((error: Error) => {
+      console.error(`claude-proxy failed on ${clientRequest.method} ${clientRequest.url}: ${error.stack}`);
       if (!clientResponse.headersSent) clientResponse.writeHead(500, { 'content-type': 'text/plain' });
       clientResponse.end();
     });

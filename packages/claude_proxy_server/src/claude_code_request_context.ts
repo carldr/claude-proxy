@@ -44,10 +44,13 @@ function extractSessionId(requestHeaders: IncomingHttpHeaders, metadata: unknown
   return sessionIdPattern.exec(userId)?.[1] ?? null;
 }
 
+/**
+ * Finds the "Primary working directory" line of Claude Code's environment block. Claude Code puts that block
+ * in the top-level `system` field or in an early `role: "system"` message, so the search stops at the first match.
+ */
 function extractProjectPath(system: unknown, messages: Array<Record<string, unknown>>): string | null {
-  const textsToSearch = [readContentText(system), readContentText(messages[0]?.content)];
-  for (const textToSearch of textsToSearch) {
-    const workingDirectory = workingDirectoryPattern.exec(textToSearch)?.[1]?.trim();
+  for (const content of [system, ...messages.map((message) => message.content)]) {
+    const workingDirectory = workingDirectoryPattern.exec(readContentText(content))?.[1]?.trim();
     if (workingDirectory) return workingDirectory;
   }
   return null;

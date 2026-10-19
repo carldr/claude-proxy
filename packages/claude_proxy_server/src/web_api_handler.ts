@@ -12,6 +12,8 @@ export interface WebApiHandlerDependencies {
   requestDatabase: RequestDatabase;
   routingState: RoutingState;
   readConfigErrors: () => string[];
+  /** Returns an error message, or null on success. */
+  checkSubscriptionUsage: () => Promise<string | null>;
   claudeCodeProjectsDirectory: string;
 }
 
@@ -42,6 +44,15 @@ export async function handleWebApiRequest(
         routingState.setSelectedApiKeyRouteName(routingSettings.selectedApiKeyRouteName);
       }
       return sendJson(clientResponse, 200, { ...routingState.readRoutingStatus(), configErrors: dependencies.readConfigErrors() });
+    }
+
+    if (clientRequest.method === 'POST' && apiPath === 'subscription-usage-check') {
+      const checkError = await dependencies.checkSubscriptionUsage();
+      return sendJson(clientResponse, checkError === null ? 200 : 502, {
+        ...routingState.readRoutingStatus(),
+        configErrors: dependencies.readConfigErrors(),
+        subscriptionUsageCheckError: checkError,
+      });
     }
 
     if (clientRequest.method === 'GET' && apiPath === 'proxied-requests') {

@@ -40,8 +40,11 @@ const claudeCodeRequestBody = {
   max_tokens: 1000,
   stream: true,
   metadata: { user_id: JSON.stringify({ device_id: 'abc', session_id: sessionId }) },
-  system: [{ type: 'text', text: 'You are Claude Code.\n - Primary working directory: /Users/example_user/Development/example_project\n' }],
-  messages: [{ role: 'user', content: [{ type: 'text', text: '<system-reminder>ignore</system-reminder>Find the zebra bug' }] }],
+  system: [{ type: 'text', text: 'You are Claude Code.' }],
+  messages: [
+    { role: 'user', content: [{ type: 'text', text: '<system-reminder>ignore</system-reminder>Find the zebra bug' }] },
+    { role: 'system', content: [{ type: 'text', text: '# Environment\n - Primary working directory: /Users/example_user/Development/example_project\n' }] },
+  ],
 };
 
 function sendStreamingMessage(upstreamResponse: ServerResponse, responseText: string, extraHeaders: Record<string, string> = {}) {
@@ -252,6 +255,24 @@ describe('claude-proxy', () => {
     await putRoutingSettings({ routingMode: 'force_subscription' });
     await (await sendClaudeCodeRequest()).text();
     assert.deepEqual(receivedRequests.map((receivedRequest) => receivedRequest.upstreamName), ['key_2', 'subscription']);
+  });
+
+  test('rejects requests from web pages and requests addressed to another host name', async () => {
+    await startProxy((_, upstreamResponse) => sendStreamingMessage(upstreamResponse, 'Subscription'), []);
+    const sendWithHeaders = (requestHeaders: Record<string, string>) =>
+      new Promise<number>((resolve, reject) => {
+        const proxyUrl = new URL(`${claudeProxyBaseUrl}/_proxy/api/proxied-requests`);
+        http.get(proxyUrl, { headers: requestHeaders }, (proxyResponse) => {
+          proxyResponse.resume();
+          resolve(proxyResponse.statusCode ?? 0);
+        }).on('error', reject);
+      });
+    const proxyHost = new URL(claudeProxyBaseUrl).host;
+    assert.equal(await sendWithHeaders({ host: proxyHost }), 200);
+    assert.equal(await sendWithHeaders({ host: proxyHost, origin: `http://${proxyHost}` }), 200);
+    assert.equal(await sendWithHeaders({ host: proxyHost, origin: 'https://example.com' }), 403);
+    assert.equal(await sendWithHeaders({ host: `rebound.example.com:${new URL(claudeProxyBaseUrl).port}` }), 403);
+    assert.equal(receivedRequests.length, 0);
   });
 
   test('passes requests that carry their own API key through unchanged', async () => {

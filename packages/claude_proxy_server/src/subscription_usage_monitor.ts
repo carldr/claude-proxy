@@ -33,7 +33,14 @@ export class SubscriptionUsageMonitor {
   }
 
   async checkUsageWhileLimitReached(): Promise<void> {
-    if (!this.routingState.isSubscriptionWeeklyLimitReached() || this.latestAccessToken === null) return;
+    if (!this.routingState.isSubscriptionWeeklyLimitReached()) return;
+    const checkError = await this.checkSubscriptionUsage();
+    if (checkError !== null) console.error(checkError);
+  }
+
+  /** Reads the weekly subscription usage from Anthropic and records it. Returns an error message, or null on success. */
+  async checkSubscriptionUsage(): Promise<string | null> {
+    if (this.latestAccessToken === null) return 'No Claude Code request has passed through the proxy since it started, so it has no OAuth token';
     try {
       const usageResponse = await fetch(`${this.anthropicBaseUrl}/api/oauth/usage`, {
         headers: {
@@ -43,20 +50,15 @@ export class SubscriptionUsageMonitor {
         },
         signal: AbortSignal.timeout(30_000),
       });
-      if (!usageResponse.ok) {
-        console.error(`Subscription usage check returned HTTP ${usageResponse.status}`);
-        return;
-      }
+      if (!usageResponse.ok) return `Subscription usage check returned HTTP ${usageResponse.status}`;
       const usageReport = (await usageResponse.json()) as { seven_day?: { utilization?: number; resets_at?: string | null } };
       const weeklyUtilizationPercent = usageReport.seven_day?.utilization;
-      if (typeof weeklyUtilizationPercent !== 'number') {
-        console.error('Subscription usage check returned no seven_day.utilization');
-        return;
-      }
+      if (typeof weeklyUtilizationPercent !== 'number') return 'Subscription usage check returned no seven_day.utilization';
       const weeklyResetsAt = usageReport.seven_day?.resets_at ? new Date(usageReport.seven_day.resets_at) : null;
       this.routingState.recordSubscriptionUsageCheck(weeklyUtilizationPercent / 100, weeklyResetsAt);
+      return null;
     } catch (error) {
-      console.error(`Subscription usage check failed: ${(error as Error).message}`);
+      return `Subscription usage check failed: ${(error as Error).message}`;
     }
   }
 }
