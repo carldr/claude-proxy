@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>local.claude-proxy.menu-bar</string>
+  <key>CFBundleName</key>
+  <string>Claude Proxy Menu Bar</string>
+  <key>CFBundleExecutable</key>
+  <string>ClaudeProxyMenuBar</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>13.0</string>
+  <!-- Shows the app only in the menu bar, with no Dock icon. -->
+  <key>LSUIElement</key>
+  <true/>
+  <!-- Allows plain HTTP to claude-proxy on 127.0.0.1. -->
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsLocalNetworking</key>
+    <true/>
+  </dict>
+</dict>
+</plist>
