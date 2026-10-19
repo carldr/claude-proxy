@@ -361,7 +361,7 @@ a {
 }
 
 .data-table .project-name {
-  max-width: 130px;
+  max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
