@@ -31,6 +31,12 @@ export interface ClaudeProxyServer {
 const defaultConfigDirectory = path.join(import.meta.dirname, '..', 'default_config');
 
 /**
+ * The proxy forwards and records only these paths. Claude Code uses no others. Other paths, such as a browser
+ * tab left on port 4100, get a local 404 and are not recorded.
+ */
+const anthropicApiPathPrefixes = ['/v1/', '/api/'];
+
+/**
  * Accepts a request only when its Host is 127.0.0.1 or localhost on the proxy's port, and when it has no Origin
  * or the proxy's own Origin. This stops web pages, including pages that use DNS rebinding, from reading recorded
  * requests or from sending requests that the proxy would send with an API key. Claude Code sends no Origin header.
@@ -91,7 +97,7 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
     } else if (clientRequest.method === 'GET' && (requestPath === '/' || requestPath === '/_proxy')) {
       clientResponse.writeHead(302, { location: webUiPathPrefix });
       clientResponse.end();
-    } else {
+    } else if (anthropicApiPathPrefixes.some((anthropicApiPathPrefix) => requestPath.startsWith(anthropicApiPathPrefix))) {
       await handleProxyRequest(clientRequest, clientResponse, {
         requestDatabase,
         routingState,
@@ -99,6 +105,9 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
         anthropicBaseUrl: options.anthropicBaseUrl,
         rememberSubscriptionAccessToken: (accessToken) => subscriptionUsageMonitor.rememberAccessToken(accessToken),
       });
+    } else {
+      clientResponse.writeHead(404, { 'content-type': 'text/plain' });
+      clientResponse.end('claude-proxy forwards only Anthropic API paths (/v1/ and /api/). The web UI is at /_proxy/.');
     }
   };
 

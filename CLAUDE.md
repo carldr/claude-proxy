@@ -34,7 +34,8 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:4199 claude -p "Reply with the single word: 
 
 - `/_proxy/api/*` goes to `web_api_handler.ts`.
 - `/_proxy/*` goes to `web_ui_static_file_handler.ts`.
-- Every other path goes to `proxy_request_handler.ts`.
+- `/v1/*` and `/api/*`, the only paths that Claude Code uses, go to `proxy_request_handler.ts`.
+- Every other path gets a local 404 and is not recorded.
 
 `handleProxyRequest` does the following:
 

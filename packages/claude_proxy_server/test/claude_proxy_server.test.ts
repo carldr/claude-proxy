@@ -283,6 +283,16 @@ describe('claude-proxy', () => {
     assert.equal(receivedRequests.length, 0);
   });
 
+  test('answers paths outside the Anthropic API locally and does not record them', async () => {
+    await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}), []);
+    for (const requestPath of ['/ideas.html', '/favicon.ico', '/.well-known/appspecific/com.chrome.devtools.json']) {
+      assert.equal((await fetch(`${claudeProxyBaseUrl}${requestPath}`)).status, 404, requestPath);
+    }
+    assert.equal((await fetch(`${claudeProxyBaseUrl}/api/hello`, { method: 'HEAD' })).status, 200);
+    assert.deepEqual(receivedRequests.map((receivedRequest) => receivedRequest.path), ['/api/hello']);
+    assert.deepEqual((await readApi('proxied-requests')).map((requestSummary: { request_path: string }) => requestSummary.request_path), ['/api/hello']);
+  });
+
   test('passes requests that carry their own API key through unchanged', async () => {
     await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, { type: 'message', content: [] }), [
       (_, upstreamResponse) => sendStreamingMessage(upstreamResponse, 'Key 1'),
