@@ -59,32 +59,81 @@ Requests that carry their own API key, and requests to paths other than `/v1/mes
    mkcert -cert-file ~/.claude-proxy/api.anthropic.com.pem -key-file ~/.claude-proxy/api.anthropic.com-key.pem api.anthropic.com
    ```
 
-6. Add this function to your `~/.zshrc`. Do not set `ANTHROPIC_BASE_URL`.
-
-   ```zsh
-   #  Sends Claude Code through claude-proxy when the proxy answers on port 4100.
-   #  claude-proxy is the HTTPS_PROXY, so Claude Code keeps api.anthropic.com as
-   #  its API host, and Remote Control stays on.  The check runs at each launch, so a
-   #  stopped proxy never leaves claude pointing at a dead address.  An
-   #  HTTPS_PROXY or ANTHROPIC_BASE_URL that is already set wins.
-   function claude() {
-   	local claude_proxy_url="http://127.0.0.1:4100"
-
-   	if [[ -z "$HTTPS_PROXY$ANTHROPIC_BASE_URL" ]] &&
-   		curl --silent --fail --max-time 1 --output /dev/null "$claude_proxy_url/_proxy/api/routing-status"
-   	then
-   		HTTPS_PROXY="$claude_proxy_url" NO_PROXY="localhost,127.0.0.1" NODE_EXTRA_CA_CERTS="$(mkcert -CAROOT)/rootCA.pem" \
-   			command claude "$@"
-   	else
-   		command claude "$@"
-   	fi
-   }
-   ```
-
-   Claude Code passes `HTTPS_PROXY`, `NO_PROXY` and `NODE_EXTRA_CA_CERTS` to the commands that it runs, so their HTTPS traffic also goes through the proxy tunnel.
-   The proxy also accepts `ANTHROPIC_BASE_URL=http://127.0.0.1:4100`, but Claude Code then turns off Remote Control.
+6. Point Claude Code at the proxy with one of the methods in [Connecting Claude Code](#connecting-claude-code).
 
 Run `pnpm install_launchd_agents` again after a Node.js upgrade, because the agent stores the path to `node`.
+
+## Connecting Claude Code
+
+Claude Code reaches the proxy in one of two ways:
+
+- **As its HTTPS proxy.** `HTTPS_PROXY` sends every HTTPS connection to the proxy as a `CONNECT` tunnel. The proxy decrypts `api.anthropic.com` and passes other hosts through. Claude Code still sees `api.anthropic.com` as its API host, so Remote Control stays on.
+- **As its API base URL.** `ANTHROPIC_BASE_URL` sends only API requests to the proxy, in plain HTTP. No certificate is needed. Claude Code turns off Remote Control for any base URL other than `api.anthropic.com`.
+
+Claude Code passes its environment to the commands that it runs. With `HTTPS_PROXY`, their HTTPS traffic also goes through the proxy tunnel. While the proxy restarts, their connections fail.
+
+| Method | What goes through the proxy | Remote Control | When the proxy is down |
+| --- | --- | --- | --- |
+| zsh function | Claude Code started from zsh, and the commands it runs | On | Claude Code connects directly |
+| `env` in `~/.claude/settings.json` | Claude Code from every launcher, including IDEs, and the commands it runs | On | Claude Code fails until you remove the settings |
+| `export` in the shell profile | Every program started from the shell, such as curl, git and npm | On | All HTTPS from the shell fails |
+| `ANTHROPIC_BASE_URL` | Claude Code's API requests only | Off | Claude Code fails |
+
+The zsh function is the recommended method. It changes nothing outside Claude Code, and it checks the proxy at each launch.
+
+`NODE_EXTRA_CA_CERTS` lets Node.js programs that Claude Code runs trust the mkcert certificate. Claude Code itself trusts the mkcert CA through the macOS keychain, after `mkcert -install`.
+
+### zsh function
+
+Add this function to `~/.zshrc`:
+
+```zsh
+#  Sends Claude Code through claude-proxy when the proxy answers on port 4100.
+#  claude-proxy is the HTTPS_PROXY, so Claude Code keeps api.anthropic.com as
+#  its API host, and Remote Control stays on.  The check runs at each launch, so a
+#  stopped proxy never leaves claude pointing at a dead address.  An
+#  HTTPS_PROXY or ANTHROPIC_BASE_URL that is already set wins.
+function claude() {
+	local claude_proxy_url="http://127.0.0.1:4100"
+
+	if [[ -z "$HTTPS_PROXY$ANTHROPIC_BASE_URL" ]] &&
+		curl --silent --fail --max-time 1 --output /dev/null "$claude_proxy_url/_proxy/api/routing-status"
+	then
+		HTTPS_PROXY="$claude_proxy_url" NO_PROXY="localhost,127.0.0.1" NODE_EXTRA_CA_CERTS="$(mkcert -CAROOT)/rootCA.pem" \
+			command claude "$@"
+	else
+		command claude "$@"
+	fi
+}
+```
+
+### `env` in `~/.claude/settings.json`
+
+Add these keys to the `env` object. Replace the CA path with the output of `mkcert -CAROOT`, followed by `/rootCA.pem`:
+
+```json
+{
+  "env": {
+    "HTTPS_PROXY": "http://127.0.0.1:4100",
+    "NO_PROXY": "localhost,127.0.0.1",
+    "NODE_EXTRA_CA_CERTS": "/Users/you/Library/Application Support/mkcert/rootCA.pem"
+  }
+}
+```
+
+### `export` in the shell profile
+
+```sh
+export HTTPS_PROXY=http://127.0.0.1:4100
+export NO_PROXY=localhost,127.0.0.1
+export NODE_EXTRA_CA_CERTS="$(mkcert -CAROOT)/rootCA.pem"
+```
+
+### `ANTHROPIC_BASE_URL`
+
+```sh
+export ANTHROPIC_BASE_URL=http://127.0.0.1:4100
+```
 
 ## Configuration
 
