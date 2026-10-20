@@ -1,6 +1,6 @@
 # claude-proxy
 
-claude-proxy is a local proxy between Claude Code and the Anthropic API. It records every request in SQLite. When your weekly subscription limit is almost used, it sends Claude Code's subscription traffic to an API key. Claude Code does not see the change.
+claude-proxy is a local proxy between Claude Code and the Anthropic API. It records Claude Code's Messages API requests in SQLite. When your weekly subscription limit is almost used, it sends Claude Code's subscription traffic to an API key. Claude Code does not see the change.
 
 ![The claude-proxy web UI: the routing panel with weekly subscription usage, and the request log](docs/web_ui_requests.png)
 

@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-claude-proxy is a local proxy for Claude Code on `127.0.0.1:4100`. It records every request in SQLite. In auto mode it sends subscription traffic to API keys when weekly subscription usage reaches 98%. `README.md` describes the behaviour for users.
+claude-proxy is a local proxy for Claude Code on `127.0.0.1:4100`. It records `/v1/messages`, `/v1/messages/count_tokens`, `/v1/models` and `/api/hello` in SQLite, and forwards every other path unrecorded. In auto mode it sends subscription traffic to API keys when weekly subscription usage reaches 98%. `README.md` describes the behaviour for users.
 
 ## Commands
 
