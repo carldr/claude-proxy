@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import http, { type IncomingHttpHeaders, type ServerResponse } from 'node:http';
+import type net from 'node:net';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
+import tls from 'node:tls';
 import { createClaudeProxyServer, type ClaudeProxyServer } from '../src/claude_proxy_server.ts';
 
 interface ReceivedUpstreamRequest {
@@ -91,6 +94,7 @@ describe('claude-proxy', () => {
   let fakeUpstreamServers: http.Server[];
   let claudeProxyServer: ClaudeProxyServer;
   let claudeProxyBaseUrl: string;
+  let subscriptionUpstreamBaseUrl: string;
 
   beforeEach(() => {
     claudeProxyDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-proxy-test-'));
@@ -107,6 +111,7 @@ describe('claude-proxy', () => {
   async function startProxy(respondAsSubscription: FakeUpstreamResponder, apiKeyRouteResponders: FakeUpstreamResponder[]) {
     const subscriptionUpstream = await startFakeUpstream('subscription', receivedRequests, respondAsSubscription);
     fakeUpstreamServers.push(subscriptionUpstream.server);
+    subscriptionUpstreamBaseUrl = subscriptionUpstream.baseUrl;
     const apiKeyRouteYaml: string[] = [];
     for (const [routeIndex, respondAsApiKeyRoute] of apiKeyRouteResponders.entries()) {
       const apiKeyUpstream = await startFakeUpstream(`key_${routeIndex + 1}`, receivedRequests, respondAsApiKeyRoute);
@@ -305,5 +310,104 @@ describe('claude-proxy', () => {
     assert.equal(receivedRequests[0]!.upstreamName, 'subscription');
     assert.equal(receivedRequests[0]!.headers['x-api-key'], 'sk-client-key');
     assert.equal((await readApi('proxied-requests'))[0].route_kind, 'passthrough');
+  });
+
+  describe('as an HTTPS_PROXY', () => {
+    function createAnthropicApiCertificate() {
+      execFileSync('openssl', [
+        'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-days', '1',
+        '-subj', '/CN=api.anthropic.com', '-addext', 'subjectAltName=DNS:api.anthropic.com',
+        '-keyout', path.join(claudeProxyDirectory, 'api.anthropic.com-key.pem'),
+        '-out', path.join(claudeProxyDirectory, 'api.anthropic.com.pem'),
+      ], { stdio: 'ignore' });
+      return fs.readFileSync(path.join(claudeProxyDirectory, 'api.anthropic.com.pem'));
+    }
+
+    /** Sends CONNECT to the proxy and resolves with the response status and, on 200, the tunnel socket. */
+    function openConnectTunnel(connectTarget: string) {
+      return new Promise<{ statusCode: number; tunnelSocket: net.Socket }>((resolve, reject) => {
+        const proxyUrl = new URL(claudeProxyBaseUrl);
+        http
+          .request({ host: proxyUrl.hostname, port: proxyUrl.port, method: 'CONNECT', path: connectTarget })
+          .on('connect', (connectResponse, tunnelSocket) => resolve({ statusCode: connectResponse.statusCode ?? 0, tunnelSocket }))
+          .on('error', reject)
+          .end();
+      });
+    }
+
+    function sendHttpRequestThroughSocket(requestOptions: http.RequestOptions, connectionSocket: net.Socket, requestBody: string) {
+      return new Promise<{ statusCode: number; headers: IncomingHttpHeaders; body: string }>((resolve, reject) => {
+        const clientRequest = http.request({ ...requestOptions, createConnection: () => connectionSocket }, async (clientResponse) => {
+          const bodyChunks: Buffer[] = [];
+          for await (const bodyChunk of clientResponse) bodyChunks.push(bodyChunk as Buffer);
+          resolve({ statusCode: clientResponse.statusCode ?? 0, headers: clientResponse.headers, body: Buffer.concat(bodyChunks).toString('utf8') });
+        });
+        clientRequest.on('error', reject);
+        clientRequest.end(requestBody);
+      });
+    }
+
+    test('decrypts api.anthropic.com tunnels and routes them like ANTHROPIC_BASE_URL requests', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 429, { type: 'error' }, weeklyLimitRejectionHeaders), [
+        (_, upstreamResponse) => sendStreamingMessage(upstreamResponse, 'Key 1'),
+      ]);
+      const anthropicApiCertificate = createAnthropicApiCertificate();
+      const { statusCode, tunnelSocket } = await openConnectTunnel('api.anthropic.com:443');
+      assert.equal(statusCode, 200);
+      const decryptedSocket = tls.connect({ socket: tunnelSocket, servername: 'api.anthropic.com', ca: anthropicApiCertificate });
+
+      const proxiedResponse = await sendHttpRequestThroughSocket(
+        {
+          method: 'POST',
+          path: '/v1/messages?beta=true',
+          headers: { host: 'api.anthropic.com', authorization: 'Bearer sk-ant-oat-test', 'content-type': 'application/json' },
+        },
+        decryptedSocket,
+        JSON.stringify(claudeCodeRequestBody),
+      );
+
+      assert.equal(proxiedResponse.statusCode, 200);
+      assert.equal(proxiedResponse.headers['x-claude-proxy-route'], 'key_1');
+      assert.deepEqual(receivedRequests.map((receivedRequest) => receivedRequest.upstreamName), ['subscription', 'key_1']);
+      assert.equal(receivedRequests[0]!.headers.host, new URL(subscriptionUpstreamBaseUrl).host);
+      assert.equal(receivedRequests[1]!.headers['x-api-key'], 'sk-test-1');
+      assert.equal((await readApi('proxied-requests'))[0].route_name, 'key_1');
+    });
+
+    test('forwards api.anthropic.com paths outside /v1/ and /api/', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, { servers: [] }), []);
+      const anthropicApiCertificate = createAnthropicApiCertificate();
+      const { tunnelSocket } = await openConnectTunnel('api.anthropic.com:443');
+      const decryptedSocket = tls.connect({ socket: tunnelSocket, servername: 'api.anthropic.com', ca: anthropicApiCertificate });
+      const proxiedResponse = await sendHttpRequestThroughSocket(
+        { method: 'GET', path: '/mcp-registry/v0/servers', headers: { host: 'api.anthropic.com' } },
+        decryptedSocket,
+        '',
+      );
+      assert.equal(proxiedResponse.statusCode, 200);
+      assert.deepEqual(receivedRequests.map((receivedRequest) => receivedRequest.path), ['/mcp-registry/v0/servers']);
+    });
+
+    test('tunnels other hosts unchanged and does not record them', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, { tunnelled: true }), []);
+      const subscriptionUpstreamHost = new URL(subscriptionUpstreamBaseUrl).host;
+      const { statusCode, tunnelSocket } = await openConnectTunnel(subscriptionUpstreamHost);
+      assert.equal(statusCode, 200);
+      const tunnelledResponse = await sendHttpRequestThroughSocket(
+        { method: 'GET', path: '/v1/models', headers: { host: subscriptionUpstreamHost } },
+        tunnelSocket,
+        '',
+      );
+      assert.equal(tunnelledResponse.body, '{"tunnelled":true}');
+      assert.equal(tunnelledResponse.headers['x-claude-proxy-route'], undefined);
+      assert.deepEqual(await readApi('proxied-requests'), []);
+    });
+
+    test('refuses api.anthropic.com tunnels while the certificate is missing', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}), []);
+      const { statusCode } = await openConnectTunnel('api.anthropic.com:443');
+      assert.equal(statusCode, 502);
+      assert.equal(receivedRequests.length, 0);
+    });
   });
 });

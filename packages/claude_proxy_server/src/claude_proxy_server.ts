@@ -2,7 +2,9 @@ import fs from 'node:fs';
 import http, { type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
+import type { Duplex } from 'node:stream';
 import { parseApiKeyRoutesConfig, type ApiKeyRoute } from './api_key_routes_config.ts';
+import { handleHttpsProxyConnect } from './https_proxy_connect_handler.ts';
 import { parseModelPricingConfig, type ModelPricingTable } from './model_pricing_config.ts';
 import { handleProxyRequest } from './proxy_request_handler.ts';
 import { RequestDatabase } from './request_database.ts';
@@ -13,7 +15,10 @@ import { handleWebUiStaticFileRequest, webUiPathPrefix } from './web_ui_static_f
 import { YamlConfigFile } from './yaml_config_file.ts';
 
 export interface ClaudeProxyServerOptions {
-  /** Holds `routes.yml`, `pricing.yml` and `requests.sqlite`. Normally `~/.claude-proxy`. */
+  /**
+   * Holds `routes.yml`, `pricing.yml`, `requests.sqlite`, and the api.anthropic.com certificate
+   * `api.anthropic.com.pem` with its key `api.anthropic.com-key.pem`. Normally `~/.claude-proxy`.
+   */
   claudeProxyDirectory: string;
   anthropicBaseUrl: string;
   webUiDistDirectory: string;
@@ -31,8 +36,9 @@ export interface ClaudeProxyServer {
 const defaultConfigDirectory = path.join(import.meta.dirname, '..', 'default_config');
 
 /**
- * The proxy forwards and records only these paths. Claude Code uses no others. Other paths, such as a browser
- * tab left on port 4100, get a local 404 and are not recorded.
+ * On the loopback listener, the proxy forwards and records only these paths. Other paths, such as a browser
+ * tab left on port 4100, get a local 404 and are not recorded. Intercepted api.anthropic.com connections
+ * forward every path, because Claude Code also uses others there, such as `/mcp-registry/`.
  */
 const anthropicApiPathPrefixes = ['/v1/', '/api/'];
 
@@ -77,6 +83,15 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
   const routingState = new RoutingState(requestDatabase, () => apiKeyRoutesConfigFile.read().config);
   const subscriptionUsageMonitor = new SubscriptionUsageMonitor(routingState, options.anthropicBaseUrl);
 
+  const proxyRequest = (clientRequest: IncomingMessage, clientResponse: ServerResponse) =>
+    handleProxyRequest(clientRequest, clientResponse, {
+      requestDatabase,
+      routingState,
+      readModelPricingTable: () => modelPricingConfigFile.read().config,
+      anthropicBaseUrl: options.anthropicBaseUrl,
+      rememberSubscriptionAccessToken: (accessToken) => subscriptionUsageMonitor.rememberAccessToken(accessToken),
+    });
+
   const dispatchRequest = async (clientRequest: IncomingMessage, clientResponse: ServerResponse): Promise<void> => {
     const requestPath = clientRequest.url ?? '/';
     if (!isLocalRequest(clientRequest, httpServer)) {
@@ -98,28 +113,48 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
       clientResponse.writeHead(302, { location: webUiPathPrefix });
       clientResponse.end();
     } else if (anthropicApiPathPrefixes.some((anthropicApiPathPrefix) => requestPath.startsWith(anthropicApiPathPrefix))) {
-      await handleProxyRequest(clientRequest, clientResponse, {
-        requestDatabase,
-        routingState,
-        readModelPricingTable: () => modelPricingConfigFile.read().config,
-        anthropicBaseUrl: options.anthropicBaseUrl,
-        rememberSubscriptionAccessToken: (accessToken) => subscriptionUsageMonitor.rememberAccessToken(accessToken),
-      });
+      await proxyRequest(clientRequest, clientResponse);
     } else {
       clientResponse.writeHead(404, { 'content-type': 'text/plain' });
       clientResponse.end('claude-proxy forwards only Anthropic API paths (/v1/ and /api/). The web UI is at /_proxy/.');
     }
   };
 
-  const httpServer = http.createServer((clientRequest, clientResponse) => {
-    dispatchRequest(clientRequest, clientResponse).catch((error: Error) => {
-      console.error(`claude-proxy failed on ${clientRequest.method} ${clientRequest.url}: ${error.stack}`);
-      if (!clientResponse.headersSent) clientResponse.writeHead(500, { 'content-type': 'text/plain' });
-      clientResponse.end();
+  const createRequestServer = (handleRequest: typeof dispatchRequest) => {
+    const requestServer = http.createServer((clientRequest, clientResponse) => {
+      handleRequest(clientRequest, clientResponse).catch((error: Error) => {
+        console.error(`claude-proxy failed on ${clientRequest.method} ${clientRequest.url}: ${error.stack}`);
+        if (!clientResponse.headersSent) clientResponse.writeHead(500, { 'content-type': 'text/plain' });
+        clientResponse.end();
+      });
+    });
+    // Requests with extended thinking can run for many minutes.
+    requestServer.requestTimeout = 0;
+    return requestServer;
+  };
+
+  const httpServer = createRequestServer(dispatchRequest);
+
+  // The client reached api.anthropic.com through a CONNECT tunnel to the loopback listener, so every
+  // decrypted request is local. It carries Host api.anthropic.com, and every path goes to Anthropic.
+  const interceptedAnthropicApiServer = createRequestServer(proxyRequest);
+  interceptedAnthropicApiServer.on('clientError', (error: Error, decryptedSocket: Duplex) => {
+    console.error(`claude-proxy dropped an intercepted api.anthropic.com connection: ${error.message}`);
+    decryptedSocket.destroy();
+  });
+
+  const connectClientSockets = new Set<Duplex>();
+  httpServer.on('connect', (connectRequest: IncomingMessage, clientSocket: Duplex, connectRequestHead: Buffer) => {
+    handleHttpsProxyConnect(connectRequest, clientSocket, connectRequestHead, {
+      anthropicApiCertificatePath: path.join(options.claudeProxyDirectory, 'api.anthropic.com.pem'),
+      anthropicApiCertificateKeyPath: path.join(options.claudeProxyDirectory, 'api.anthropic.com-key.pem'),
+      interceptedAnthropicApiServer,
+      trackClientSocket: (trackedSocket) => {
+        connectClientSockets.add(trackedSocket);
+        trackedSocket.on('close', () => connectClientSockets.delete(trackedSocket));
+      },
     });
   });
-  // Requests with extended thinking can run for many minutes.
-  httpServer.requestTimeout = 0;
 
   return {
     httpServer,
@@ -129,6 +164,7 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
     async close() {
       subscriptionUsageMonitor.stop();
       httpServer.closeAllConnections();
+      for (const connectClientSocket of connectClientSockets) connectClientSocket.destroy();
       await new Promise<void>((resolve) => httpServer.close(() => resolve()));
       requestDatabase.close();
     },
