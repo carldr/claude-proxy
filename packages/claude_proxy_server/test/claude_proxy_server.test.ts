@@ -294,7 +294,8 @@ describe('claude-proxy', () => {
       assert.equal((await fetch(`${claudeProxyBaseUrl}${requestPath}`)).status, 404, requestPath);
     }
     assert.equal((await fetch(`${claudeProxyBaseUrl}/api/hello`, { method: 'HEAD' })).status, 200);
-    assert.deepEqual(receivedRequests.map((receivedRequest) => receivedRequest.path), ['/api/hello']);
+    assert.equal((await fetch(`${claudeProxyBaseUrl}/api/oauth/account/settings`)).status, 200);
+    assert.deepEqual(receivedRequests.map((receivedRequest) => receivedRequest.path), ['/api/hello', '/api/oauth/account/settings']);
     assert.deepEqual((await readApi('proxied-requests')).map((requestSummary: { request_path: string }) => requestSummary.request_path), ['/api/hello']);
   });
 
@@ -374,7 +375,7 @@ describe('claude-proxy', () => {
       assert.equal((await readApi('proxied-requests'))[0].route_name, 'key_1');
     });
 
-    test('forwards api.anthropic.com paths outside /v1/ and /api/', async () => {
+    test('forwards api.anthropic.com paths outside /v1/ and /api/, and does not record them', async () => {
       await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, { servers: [] }), []);
       const anthropicApiCertificate = createAnthropicApiCertificate();
       const { tunnelSocket } = await openConnectTunnel('api.anthropic.com:443');
@@ -386,6 +387,7 @@ describe('claude-proxy', () => {
       );
       assert.equal(proxiedResponse.statusCode, 200);
       assert.deepEqual(receivedRequests.map((receivedRequest) => receivedRequest.path), ['/mcp-registry/v0/servers']);
+      assert.deepEqual(await readApi('proxied-requests'), []);
     });
 
     test('tunnels other hosts unchanged and does not record them', async () => {

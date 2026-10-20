@@ -35,7 +35,12 @@ const requestHeadersNotForwarded = new Set([
   'host', 'connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'te', 'trailer',
   'content-length', 'accept-encoding',
 ]);
-const responseHeadersNotForwarded = new Set(['connection', 'keep-alive', 'transfer-encoding', 'content-length']);
+/**
+ * The proxy records only these paths and forwards every other path unrecorded. Through `HTTPS_PROXY`, Claude Code
+ * also sends bootstrap, plugin, telemetry and Remote Control polling requests, which the proxy does not use.
+ */
+const recordedRequestPaths = new Set(['/v1/messages', '/v1/messages/count_tokens', '/v1/models', '/api/hello']);
+const responseHeadersNotForwarded =new Set(['connection', 'keep-alive', 'transfer-encoding', 'content-length']);
 
 /**
  * Forwards one client request to Anthropic and records it.
@@ -58,7 +63,7 @@ export async function handleProxyRequest(
   if (bearerToken) dependencies.rememberSubscriptionAccessToken(bearerToken);
 
   const requestContext = extractClaudeCodeRequestContext(clientRequest.headers, parseJsonOrNull(requestBody.toString('utf8')));
-  const proxiedRequestId = recordSafely(() =>
+  const proxiedRequestId = !recordedRequestPaths.has(requestUrl.pathname) ? null : recordSafely(() =>
     requestDatabase.insertStartedRequest({
       startedAt: new Date(startedAtMs).toISOString(),
       httpMethod: clientRequest.method ?? 'GET',
