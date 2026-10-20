@@ -403,6 +403,17 @@ describe('claude-proxy', () => {
       assert.deepEqual(await readApi('proxied-requests'), []);
     });
 
+    test('keeps running when a client resets its tunnel', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}), []);
+      const resetTunnel = async (connectTarget: string) => (await openConnectTunnel(connectTarget)).tunnelSocket.resetAndDestroy();
+      await resetTunnel('api.anthropic.com:443');
+      createAnthropicApiCertificate();
+      await resetTunnel('api.anthropic.com:443');
+      await resetTunnel(new URL(subscriptionUpstreamBaseUrl).host);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.deepEqual(await readApi('proxied-requests'), []);
+    });
+
     test('refuses api.anthropic.com tunnels while the certificate is missing', async () => {
       await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}), []);
       const { statusCode } = await openConnectTunnel('api.anthropic.com:443');

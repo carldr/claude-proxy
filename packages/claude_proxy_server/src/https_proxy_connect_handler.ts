@@ -29,6 +29,8 @@ export function handleHttpsProxyConnect(
   options: HttpsProxyConnectHandlerOptions,
 ): void {
   options.trackClientSocket(clientSocket);
+  // Node removes its own error listener before it emits `connect`. Without this one, a reset crashes the proxy.
+  clientSocket.on('error', () => clientSocket.destroy());
   if (connectRequestHead.length > 0) clientSocket.unshift(connectRequestHead);
   const connectTarget = connectRequest.url ?? '';
   if (connectTarget === interceptedAnthropicApiConnectTarget) interceptAnthropicApiConnection(clientSocket, options);
@@ -73,6 +75,5 @@ function tunnelConnection(connectTarget: string, clientSocket: Duplex): void {
     if (isTunnelOpen) clientSocket.destroy();
     else clientSocket.end(`HTTP/1.1 502 Bad Gateway\r\nconnection: close\r\n\r\nclaude-proxy could not reach ${connectTarget}: ${error.message}\n`);
   });
-  clientSocket.on('error', () => upstreamSocket.destroy());
   clientSocket.on('close', () => upstreamSocket.destroy());
 }
