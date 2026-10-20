@@ -30,11 +30,18 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:4199 claude -p "Reply with the single word: 
 
 ## Request flow
 
-`claude_proxy_server.ts` checks every request with `isLocalRequest`. The Host must be `127.0.0.1` or `localhost` on the proxy port, and the Origin must be absent or the proxy's own. It then sends the request to one of three handlers:
+Claude Code reaches the proxy as its `HTTPS_PROXY`. `https_proxy_connect_handler.ts` answers each `CONNECT`:
+
+- For `api.anthropic.com:443`, it decrypts the connection with the mkcert certificate in `~/.claude-proxy/api.anthropic.com.pem`. It gives the decrypted connection to `interceptedAnthropicApiServer`, which sends every path to `proxy_request_handler.ts`. If the certificate is missing, it answers 502.
+- For any other host, it opens a TCP tunnel and does not record it.
+
+Do not change the setup back to `ANTHROPIC_BASE_URL`. Claude Code turns off Remote Control when `ANTHROPIC_BASE_URL` is not `api.anthropic.com`. The loopback listener still accepts `ANTHROPIC_BASE_URL` requests, as follows.
+
+`claude_proxy_server.ts` checks every request on the loopback listener with `isLocalRequest`. The Host must be `127.0.0.1` or `localhost` on the proxy port, and the Origin must be absent or the proxy's own. It then sends the request to one of three handlers:
 
 - `/_proxy/api/*` goes to `web_api_handler.ts`.
 - `/_proxy/*` goes to `web_ui_static_file_handler.ts`.
-- `/v1/*` and `/api/*`, the only paths that Claude Code uses, go to `proxy_request_handler.ts`.
+- `/v1/*` and `/api/*` go to `proxy_request_handler.ts`.
 - Every other path gets a local 404 and is not recorded.
 
 `handleProxyRequest` does the following:
@@ -52,6 +59,10 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:4199 claude -p "Reply with the single word: 
 `RoutingState` keeps the mode, the selected key and the weekly usage in the `proxy_settings` table. Every subscription response updates the weekly usage from its headers. `SubscriptionUsageMonitor` polls `/api/oauth/usage` every 5 minutes, but only while the limit is reached. It uses the last OAuth token that passed through the proxy.
 
 ## Facts checked against real Claude Code traffic
+
+- Claude Code 2.1.304 honours `HTTPS_PROXY`, `NO_PROXY` and `NODE_EXTRA_CA_CERTS`. With `ANTHROPIC_BASE_URL` set to the proxy, `claude remote-control` fails with "Remote Control is only available when using Claude via api.anthropic.com".
+- Remote Control uses plain HTTPS to `api.anthropic.com` (`/v1/environments/*`, `/v1/code/sessions/*`), with no WebSocket upgrade.
+- On `api.anthropic.com`, Claude Code also calls paths outside `/v1/` and `/api/`, such as `/mcp-registry/v0/servers`.
 
 - `anthropic-ratelimit-unified-7d-utilization` is a fraction from 0 to 1. `anthropic-ratelimit-unified-7d-reset` is in epoch seconds.
 - `/api/oauth/usage` returns `seven_day.utilization` as a percentage and `seven_day.resets_at` as ISO 8601. The endpoint is undocumented.

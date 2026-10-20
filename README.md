@@ -6,7 +6,7 @@ claude-proxy is a local proxy between Claude Code and the Anthropic API. It reco
 
 ## How it works
 
-1. Claude Code sends each request to `http://127.0.0.1:4100`, because `ANTHROPIC_BASE_URL` points there.
+1. Claude Code sends its traffic to `http://127.0.0.1:4100`, because `HTTPS_PROXY` points there. The proxy decrypts the connections to `api.anthropic.com` with a certificate from mkcert. It passes connections to other hosts through unchanged. Claude Code still sees `api.anthropic.com` as its API host, so Remote Control and its other first-party features stay on. With `ANTHROPIC_BASE_URL` set to the proxy, Claude Code turns off Remote Control.
 2. The proxy reads the routing mode and the weekly subscription usage, and picks the first route:
    - **Auto**: the subscription, until weekly usage reaches 98%. After that, the API keys in `routes.yml`, with the subscription last.
    - **Subscription only**: the subscription.
@@ -29,6 +29,7 @@ Requests that carry their own API key, and requests to paths other than `/v1/mes
 - Node.js 23.6 or later, for TypeScript type stripping and `node:sqlite`
 - pnpm
 - Xcode command line tools, for `swiftc`
+- mkcert, with its local CA installed by `mkcert -install`
 
 ## Install
 
@@ -52,11 +53,22 @@ Requests that carry their own API key, and requests to paths other than `/v1/mes
 
 4. Add your API keys to `~/.claude-proxy/routes.yml`. The first start of the proxy creates this file.
 
-5. Point Claude Code at the proxy, in your shell profile or in `~/.claude/settings.json` under `env`:
+5. Create the certificate for `api.anthropic.com`:
 
    ```sh
-   export ANTHROPIC_BASE_URL=http://127.0.0.1:4100
+   mkcert -cert-file ~/.claude-proxy/api.anthropic.com.pem -key-file ~/.claude-proxy/api.anthropic.com-key.pem api.anthropic.com
    ```
+
+6. Point Claude Code at the proxy in your shell profile. Do not set `ANTHROPIC_BASE_URL`.
+
+   ```sh
+   export HTTPS_PROXY=http://127.0.0.1:4100
+   export NO_PROXY=localhost,127.0.0.1
+   export NODE_EXTRA_CA_CERTS="$(mkcert -CAROOT)/rootCA.pem"
+   ```
+
+   Claude Code passes these variables to the commands that it runs, so their HTTPS traffic also goes through the proxy tunnel.
+   The proxy also accepts `ANTHROPIC_BASE_URL=http://127.0.0.1:4100`, but Claude Code then turns off Remote Control.
 
 Run `pnpm install_launchd_agents` again after a Node.js upgrade, because the agent stores the path to `node`.
 
@@ -68,6 +80,7 @@ All configuration is in `~/.claude-proxy/`. The proxy reads each file again when
 | --- | --- |
 | `routes.yml` | The API key routes, in failover order. Each route has `name`, `letter`, `colour`, `base_url` and `api_key`. |
 | `pricing.yml` | Prices per million tokens for each model. The proxy uses them to estimate costs. |
+| `api.anthropic.com.pem`, `api.anthropic.com-key.pem` | The mkcert certificate and key that the proxy uses to decrypt `api.anthropic.com` traffic. |
 | `requests.sqlite` | The recorded requests, the routing mode, the selected API key and the last known weekly usage. |
 | `local.claude-proxy.server.log` | The proxy log. |
 
@@ -120,3 +133,5 @@ launchd/                        Scripts that install and remove the launchd agen
 ## Security
 
 The proxy listens on 127.0.0.1 only. It rejects requests whose Host is not `127.0.0.1` or `localhost`, and requests from web pages on other origins. The database stores request headers with the `Authorization` and `x-api-key` values replaced by `[redacted]`.
+
+`api.anthropic.com-key.pem` lets any program that reads it impersonate `api.anthropic.com` to every program that trusts the mkcert CA. mkcert makes the file readable by your user only. The proxy decrypts only `api.anthropic.com`. It cannot read the traffic that it tunnels to other hosts.
