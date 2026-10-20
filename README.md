@@ -59,15 +59,29 @@ Requests that carry their own API key, and requests to paths other than `/v1/mes
    mkcert -cert-file ~/.claude-proxy/api.anthropic.com.pem -key-file ~/.claude-proxy/api.anthropic.com-key.pem api.anthropic.com
    ```
 
-6. Point Claude Code at the proxy in your shell profile. Do not set `ANTHROPIC_BASE_URL`.
+6. Add this function to your `~/.zshrc`. Do not set `ANTHROPIC_BASE_URL`.
 
-   ```sh
-   export HTTPS_PROXY=http://127.0.0.1:4100
-   export NO_PROXY=localhost,127.0.0.1
-   export NODE_EXTRA_CA_CERTS="$(mkcert -CAROOT)/rootCA.pem"
+   ```zsh
+   #  Sends Claude Code through claude-proxy when the proxy answers on port 4100.
+   #  claude-proxy is the HTTPS_PROXY, so Claude Code keeps api.anthropic.com as
+   #  its API host, and Remote Control stays on.  The check runs at each launch, so a
+   #  stopped proxy never leaves claude pointing at a dead address.  An
+   #  HTTPS_PROXY or ANTHROPIC_BASE_URL that is already set wins.
+   function claude() {
+   	local claude_proxy_url="http://127.0.0.1:4100"
+
+   	if [[ -z "$HTTPS_PROXY$ANTHROPIC_BASE_URL" ]] &&
+   		curl --silent --fail --max-time 1 --output /dev/null "$claude_proxy_url/_proxy/api/routing-status"
+   	then
+   		HTTPS_PROXY="$claude_proxy_url" NO_PROXY="localhost,127.0.0.1" NODE_EXTRA_CA_CERTS="$(mkcert -CAROOT)/rootCA.pem" \
+   			command claude "$@"
+   	else
+   		command claude "$@"
+   	fi
+   }
    ```
 
-   Claude Code passes these variables to the commands that it runs, so their HTTPS traffic also goes through the proxy tunnel.
+   Claude Code passes `HTTPS_PROXY`, `NO_PROXY` and `NODE_EXTRA_CA_CERTS` to the commands that it runs, so their HTTPS traffic also goes through the proxy tunnel.
    The proxy also accepts `ANTHROPIC_BASE_URL=http://127.0.0.1:4100`, but Claude Code then turns off Remote Control.
 
 Run `pnpm install_launchd_agents` again after a Node.js upgrade, because the agent stores the path to `node`.
