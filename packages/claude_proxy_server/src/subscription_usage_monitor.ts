@@ -4,7 +4,7 @@ export const subscriptionUsageCheckIntervalMs = 5 * 60 * 1000;
 
 /**
  * While the weekly subscription limit is reached, asks Anthropic for the subscription usage every five minutes.
- * When usage is below the switch threshold again, auto mode sends subscription traffic back to the subscription.
+ * When usage is below 100% again, auto mode sends subscription traffic back to the subscription.
  * The usage endpoint is the one that Claude Code's `/usage` command reads. It needs a Claude Code OAuth access token,
  * so the monitor uses the most recent token that passed through the proxy.
  */

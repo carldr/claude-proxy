@@ -205,14 +205,15 @@ describe('claude-proxy', () => {
     assert.equal((await readApi('routing-status')).activeRoute.routeName, 'key_1');
   });
 
-  test('switches to the API key when weekly utilization reaches 98%', async () => {
+  test('keeps the subscription at 100% weekly utilization until it rejects a request', async () => {
     await startProxy(
-      (_, upstreamResponse) => sendStreamingMessage(upstreamResponse, 'Last subscription reply', { 'anthropic-ratelimit-unified-7d-utilization': '0.98' }),
+      (_, upstreamResponse) => sendStreamingMessage(upstreamResponse, 'Subscription reply', { 'anthropic-ratelimit-unified-7d-utilization': '1.0' }),
       [(_, upstreamResponse) => sendStreamingMessage(upstreamResponse, 'From the API key')],
     );
     await (await sendClaudeCodeRequest()).text();
     await (await sendClaudeCodeRequest()).text();
-    assert.deepEqual(receivedRequests.map((receivedRequest) => receivedRequest.upstreamName), ['subscription', 'key_1']);
+    assert.deepEqual(receivedRequests.map((receivedRequest) => receivedRequest.upstreamName), ['subscription', 'subscription']);
+    assert.equal((await readApi('routing-status')).subscriptionWeeklyLimitReached, false);
   });
 
   test('does not switch on a 429 for the five-hour window or on a 529', async () => {

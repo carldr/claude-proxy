@@ -15,7 +15,6 @@ export interface RoutingStatus {
   subscriptionWeeklyUtilization: number | null;
   subscriptionWeeklyResetsAt: string | null;
   subscriptionUsageCheckedAt: string | null;
-  subscriptionWeeklyUtilizationSwitchThreshold: number;
   apiKeyRoutes: Array<{ routeName: string; letter: string; colour: string; baseUrl: string }>;
   configErrors: string[];
   subscriptionUsageCheckError?: string | null;

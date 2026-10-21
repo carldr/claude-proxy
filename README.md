@@ -8,7 +8,7 @@ claude-proxy is a local proxy between Claude Code and the Anthropic API. It reco
 
 1. Claude Code sends its traffic to `http://127.0.0.1:4100`, because `HTTPS_PROXY` points there. The proxy decrypts the connections to `api.anthropic.com` with a certificate from mkcert. It passes connections to other hosts through unchanged. Claude Code still sees `api.anthropic.com` as its API host, so Remote Control and its other first-party features stay on. With `ANTHROPIC_BASE_URL` set to the proxy, Claude Code turns off Remote Control.
 2. The proxy reads the routing mode and the weekly subscription usage, and picks the first route:
-   - **Auto**: the subscription, until weekly usage reaches 98%. After that, the API keys in `routes.yml`, with the subscription last.
+   - **Auto**: the subscription, until it refuses a request for the weekly limit. After that, the API keys in `routes.yml`, with the subscription last.
    - **Subscription only**: the subscription.
    - **API key only**: the API keys in `routes.yml`.
 3. On an API key route, the proxy replaces Claude Code's OAuth token with the route's API key.
@@ -18,7 +18,7 @@ claude-proxy is a local proxy between Claude Code and the Anthropic API. It reco
 
    Other errors, such as a 429 for the 5-hour window or a 529 overload, go back to Claude Code unchanged. When no route is left, Claude Code gets the last error.
 5. Every subscription response reports weekly usage in its `anthropic-ratelimit-unified-7d-utilization` header. The proxy records this value.
-6. While the weekly limit is reached, the proxy reads your usage from Anthropic every 5 minutes. In auto mode, traffic returns to the subscription when usage is below 98%, or when the weekly window resets.
+6. While the weekly limit is reached, the proxy reads your usage from Anthropic every 5 minutes. In auto mode, traffic returns to the subscription when usage is below 100%, or when the weekly window resets.
 7. The proxy stores each request and its response in `~/.claude-proxy/requests.sqlite`. Bodies are compressed with zstd. The database also stores the Claude Code session ID, the project directory, token counts and an estimated cost.
 
 Requests that carry their own API key, and requests to paths other than `/v1/messages`, go to `api.anthropic.com` unchanged.

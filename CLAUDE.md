@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-claude-proxy is a local proxy for Claude Code on `127.0.0.1:4100`. It records `/v1/messages`, `/v1/messages/count_tokens`, `/v1/models` and `/api/hello` in SQLite, and forwards every other path unrecorded. In auto mode it sends subscription traffic to API keys when weekly subscription usage reaches 98%. `README.md` describes the behaviour for users.
+claude-proxy is a local proxy for Claude Code on `127.0.0.1:4100`. It records `/v1/messages`, `/v1/messages/count_tokens`, `/v1/models` and `/api/hello` in SQLite, and forwards every other path unrecorded. In auto mode it sends subscription traffic to API keys when the subscription refuses a request for the weekly limit. `README.md` describes the behaviour for users.
 
 ## Commands
 
@@ -64,7 +64,7 @@ Do not change the setup back to `ANTHROPIC_BASE_URL`. Claude Code turns off Remo
 - Remote Control uses plain HTTPS to `api.anthropic.com` (`/v1/environments/*`, `/v1/code/sessions/*`), with no WebSocket upgrade.
 - On `api.anthropic.com`, Claude Code also calls paths outside `/v1/` and `/api/`, such as `/mcp-registry/v0/servers`.
 
-- `anthropic-ratelimit-unified-7d-utilization` is a fraction from 0 to 1. `anthropic-ratelimit-unified-7d-reset` is in epoch seconds.
+- `anthropic-ratelimit-unified-7d-utilization` is a fraction from 0 to 1, with two decimals. A value of 1.00 can still leave room before the subscription rejects requests. `anthropic-ratelimit-unified-7d-reset` is in epoch seconds.
 - `/api/oauth/usage` returns `seven_day.utilization` as a percentage and `seven_day.resets_at` as ISO 8601. The endpoint is undocumented.
 - Claude Code sends the session ID in the `x-claude-code-session-id` header. It also sends the ID in `metadata.user_id`, which is a JSON string.
 - The `Primary working directory:` line is in a mid-conversation `role: "system"` message, not in top-level `system`. `extractProjectPath` therefore searches `system` and then each message in order.

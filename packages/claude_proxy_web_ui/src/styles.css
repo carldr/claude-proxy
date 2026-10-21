@@ -208,14 +208,6 @@ a {
   background: var(--gauge-threshold);
 }
 
-.weekly-usage-switch-line {
-  position: absolute;
-  top: -4px;
-  bottom: -4px;
-  width: 2px;
-  background: var(--gauge-threshold);
-}
-
 .weekly-usage-details {
   display: flex;
   justify-content: space-between;

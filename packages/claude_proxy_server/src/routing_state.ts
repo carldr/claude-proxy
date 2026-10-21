@@ -10,9 +10,6 @@ import type { SubscriptionWeeklyRateLimit } from './subscription_rate_limit_head
 export type RoutingMode = 'auto' | 'force_subscription' | 'force_api_key';
 export const routingModes: RoutingMode[] = ['auto', 'force_subscription', 'force_api_key'];
 
-/** In auto mode, the proxy moves subscription traffic to API keys at this fraction of the weekly limit. */
-export const subscriptionWeeklyUtilizationSwitchThreshold = 0.98;
-
 export type UpstreamRoute = { routeKind: 'subscription' } | { routeKind: 'api_key'; apiKeyRoute: ApiKeyRoute };
 
 export interface RouteAppearance {
@@ -65,7 +62,11 @@ export class RoutingState {
     this.requestDatabase.writeSetting(settingNames.selectedApiKeyRouteName, apiKeyRouteName);
   }
 
-  /** Records the weekly usage that a subscription response reported in its rate limit headers. */
+  /**
+   * Records the weekly usage that a subscription response reported in its rate limit headers.
+   * Only a rejection marks the limit reached. The utilization header has two decimals, so 1.00 can still leave
+   * up to 0.5% of the weekly limit, and the subscription takes requests until it rejects one.
+   */
   recordSubscriptionWeeklyRateLimit(weeklyRateLimit: SubscriptionWeeklyRateLimit): void {
     if (weeklyRateLimit.weeklyUtilization === null && !weeklyRateLimit.isWeeklyLimitRejection) return;
     if (weeklyRateLimit.weeklyUtilization !== null) {
@@ -74,16 +75,16 @@ export class RoutingState {
     if (weeklyRateLimit.weeklyResetsAt !== null) {
       this.requestDatabase.writeSetting(settingNames.subscriptionWeeklyResetsAt, weeklyRateLimit.weeklyResetsAt.toISOString());
     }
-    const isWeeklyLimitReached =
-      weeklyRateLimit.isWeeklyLimitRejection ||
-      (weeklyRateLimit.weeklyUtilization ?? 0) >= subscriptionWeeklyUtilizationSwitchThreshold;
-    this.requestDatabase.writeSetting(settingNames.subscriptionWeeklyLimitReached, String(isWeeklyLimitReached));
+    this.requestDatabase.writeSetting(settingNames.subscriptionWeeklyLimitReached, String(weeklyRateLimit.isWeeklyLimitRejection));
     this.requestDatabase.writeSetting(settingNames.subscriptionUsageCheckedAt, new Date().toISOString());
   }
 
-  /** Records the weekly usage that the subscription usage endpoint reported. */
+  /**
+   * Records the weekly usage that the subscription usage endpoint reported. The usage check runs only while the
+   * limit is reached, so a report of 100% keeps it reached, and a lower report sends traffic back to the subscription.
+   */
   recordSubscriptionUsageCheck(weeklyUtilization: number, weeklyResetsAt: Date | null): void {
-    this.recordSubscriptionWeeklyRateLimit({ weeklyUtilization, weeklyResetsAt, isWeeklyLimitRejection: false });
+    this.recordSubscriptionWeeklyRateLimit({ weeklyUtilization, weeklyResetsAt, isWeeklyLimitRejection: weeklyUtilization >= 1 });
   }
 
   /** True when the weekly limit was reached and its reset time, if known, has not passed. */
@@ -144,7 +145,6 @@ export class RoutingState {
       subscriptionWeeklyUtilization: weeklyUtilizationText === null ? null : Number(weeklyUtilizationText),
       subscriptionWeeklyResetsAt: this.subscriptionWeeklyResetsAt?.toISOString() ?? null,
       subscriptionUsageCheckedAt: this.requestDatabase.readSetting(settingNames.subscriptionUsageCheckedAt),
-      subscriptionWeeklyUtilizationSwitchThreshold,
       apiKeyRoutes: this.readApiKeyRoutes().map((apiKeyRoute) => ({
         routeName: apiKeyRoute.name,
         letter: apiKeyRoute.letter,

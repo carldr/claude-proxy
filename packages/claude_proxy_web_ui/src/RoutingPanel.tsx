@@ -103,7 +103,6 @@ function WeeklyUsageGauge({
   onCheckUsageNow: () => void;
 }) {
   const weeklyUtilization = routingStatus.subscriptionWeeklyUtilization;
-  const switchThreshold = routingStatus.subscriptionWeeklyUtilizationSwitchThreshold;
   const weeklyResetsAt = routingStatus.subscriptionWeeklyResetsAt ? new Date(routingStatus.subscriptionWeeklyResetsAt) : null;
 
   return (
@@ -129,10 +128,9 @@ function WeeklyUsageGauge({
           data-limit-reached={routingStatus.subscriptionWeeklyLimitReached}
           style={{ width: `${Math.min(weeklyUtilization ?? 0, 1) * 100}%` }}
         />
-        <div className="weekly-usage-switch-line" style={{ left: `calc(${switchThreshold * 100}% - 1px)` }} title={`Auto mode switches at ${switchThreshold * 100}%`} />
       </div>
       <div className="weekly-usage-details">
-        <span>Auto mode switches to an API key at {Math.round(switchThreshold * 100)}%</span>
+        <span>Auto mode switches to an API key when the subscription refuses a request for the weekly limit</span>
         <span>
           {weeklyResetsAt
             ? `Resets ${weeklyResetsAt.toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' })}`
