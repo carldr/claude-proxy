@@ -411,7 +411,8 @@ export class RequestDatabase {
     };
   }
 
-  listRequestFilterOptions(): Record<string, string[]> {
+  /** Lists the values each filter can take. Models with a request since `recentTrafficFrom` come first. */
+  listRequestFilterOptions(recentTrafficFrom: string): Record<string, unknown> {
     const listDistinct = (columnName: string): string[] =>
       (
         this.database
@@ -419,7 +420,12 @@ export class RequestDatabase {
           .all() as Array<{ value: string }>
       ).map((row) => row.value);
     return {
-      models: listDistinct('model'),
+      models: this.database
+        .prepare(
+          `SELECT model, MAX(started_at) >= ? AS has_recent_traffic FROM proxied_requests
+           WHERE model IS NOT NULL GROUP BY model ORDER BY has_recent_traffic DESC, model`,
+        )
+        .all(recentTrafficFrom),
       routeNames: listDistinct('route_name'),
       projectPaths: listDistinct('project_path'),
     };

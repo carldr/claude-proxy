@@ -96,7 +96,7 @@ export async function handleWebApiRequest(
     }
 
     if (clientRequest.method === 'GET' && apiPath === 'request-filter-options') {
-      return sendJson(clientResponse, 200, requestDatabase.listRequestFilterOptions());
+      return sendJson(clientResponse, 200, requestDatabase.listRequestFilterOptions(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()));
     }
 
     if (clientRequest.method === 'GET' && apiPath === 'cost-summary') {

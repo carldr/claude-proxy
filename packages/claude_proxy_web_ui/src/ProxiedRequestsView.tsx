@@ -110,9 +110,20 @@ export function ProxiedRequestsView({ filters, onFiltersChange, findRouteAppeara
           </select>
           <select aria-label="Model" value={filters.model} onChange={(changeEvent) => updateFilter('model', changeEvent.target.value)}>
             <option value="">All models</option>
-            {filterOptions.models.map((model) => (
-              <option key={model}>{model}</option>
-            ))}
+            {filterOptions.models
+              .filter((modelOption) => modelOption.has_recent_traffic)
+              .map((modelOption) => (
+                <option key={modelOption.model}>{modelOption.model}</option>
+              ))}
+            {filterOptions.models.some((modelOption) => !modelOption.has_recent_traffic) && (
+              <optgroup label="No requests in 30 days">
+                {filterOptions.models
+                  .filter((modelOption) => !modelOption.has_recent_traffic)
+                  .map((modelOption) => (
+                    <option key={modelOption.model}>{modelOption.model}</option>
+                  ))}
+              </optgroup>
+            )}
           </select>
           <select aria-label="Route" value={filters.routeName} onChange={(changeEvent) => updateFilter('routeName', changeEvent.target.value)}>
             <option value="">All routes</option>

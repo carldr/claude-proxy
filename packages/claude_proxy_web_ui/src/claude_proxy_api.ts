@@ -99,7 +99,8 @@ export interface ProxiedRequestCostTotals {
 }
 
 export interface RequestFilterOptions {
-  models: string[];
+  /** Models with a request in the last 30 days come first. */
+  models: Array<{ model: string; has_recent_traffic: number }>;
   routeNames: string[];
   projectPaths: string[];
 }

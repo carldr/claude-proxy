@@ -213,7 +213,9 @@ describe('claude-proxy', () => {
       ['/Users/example_user/Development/example_project', 1],
       [null, 0],
     ]);
-    assert.deepEqual((await readApi('request-filter-options')).projectPaths, ['/Users/example_user/Development/example_project']);
+    const requestFilterOptions = await readApi('request-filter-options');
+    assert.deepEqual(requestFilterOptions.projectPaths, ['/Users/example_user/Development/example_project']);
+    assert.deepEqual(requestFilterOptions.models, [{ model: 'claude-opus-5-5', has_recent_traffic: 1 }]);
   });
 
   test('sums the cost of the filtered requests in total, over 30 days and over 24 hours', async () => {
