@@ -1,5 +1,6 @@
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
+import { extractClaudeCodeRequestContext } from './claude_code_request_context.ts';
 
 export type RouteKind = 'subscription' | 'api_key' | 'passthrough';
 export type ClientAuthKind = 'oauth' | 'api_key' | 'none';
@@ -12,7 +13,9 @@ export interface StartedProxiedRequest {
   model: string | null;
   isStreaming: boolean;
   sessionId: string | null;
+  /** Null when the request carries no environment block. The database then finds the project with `previousUpstreamRequestId` or the session. */
   projectPath: string | null;
+  previousUpstreamRequestId: string | null;
   requestHeadersJson: string;
   requestBody: Buffer;
   lastUserMessageText: string;
@@ -62,13 +65,17 @@ export interface ProxiedRequestFilters {
   projectPath?: string;
   sessionId?: string;
   searchText?: string;
+}
+
+export interface ProxiedRequestPage {
   beforeId?: number;
   limit: number;
 }
 
 const proxiedRequestSummaryColumns = `
   r.id, r.started_at, r.completed_at, r.duration_ms, r.http_method, r.request_path, r.client_auth_kind,
-  r.route_kind, r.route_name, r.model, r.is_streaming, r.session_id, r.project_path, r.status_code,
+  r.route_kind, r.route_name, r.model, r.is_streaming, r.session_id, r.project_path,
+  r.is_project_path_inherited, r.status_code,
   r.error_type, r.stop_reason, r.input_tokens, r.output_tokens, r.cache_creation_5m_input_tokens,
   r.cache_creation_1h_input_tokens, r.cache_read_input_tokens, r.estimated_cost_usd,
   (SELECT COUNT(*) FROM upstream_attempts a WHERE a.proxied_request_id = r.id) AS upstream_attempt_count,
@@ -101,6 +108,8 @@ export class RequestDatabase {
         is_streaming INTEGER NOT NULL,
         session_id TEXT,
         project_path TEXT,
+        -- 1 when the request carried no environment block and project_path comes from an earlier request.
+        is_project_path_inherited INTEGER NOT NULL DEFAULT 0,
         status_code INTEGER,
         error_type TEXT,
         stop_reason TEXT,
@@ -113,7 +122,9 @@ export class RequestDatabase {
         request_headers_json TEXT NOT NULL,
         request_body_zstd BLOB,
         response_headers_json TEXT,
-        response_body_zstd BLOB
+        response_body_zstd BLOB,
+        -- The request-id response header. Claude Code sends it back as cc_prev_req in the next request.
+        upstream_request_id TEXT
       );
       CREATE INDEX IF NOT EXISTS proxied_requests_started_at ON proxied_requests (started_at);
       CREATE INDEX IF NOT EXISTS proxied_requests_session_id ON proxied_requests (session_id);
@@ -145,15 +156,102 @@ export class RequestDatabase {
         setting_value TEXT NOT NULL
       );
     `);
+    this.addProjectPathInheritanceColumns();
+    this.database.exec('CREATE INDEX IF NOT EXISTS proxied_requests_upstream_request_id ON proxied_requests (upstream_request_id)');
+  }
+
+  /**
+   * Migrates a database made before `is_project_path_inherited` and `upstream_request_id` existed.
+   * It reads the project path again from each stored request body, in the order the requests arrived.
+   */
+  private addProjectPathInheritanceColumns(): void {
+    const columnNames = (this.database.prepare('PRAGMA table_info(proxied_requests)').all() as Array<{ name: string }>).map(
+      (column) => column.name,
+    );
+    if (columnNames.includes('is_project_path_inherited')) return;
+
+    this.database.exec('BEGIN');
+    try {
+      this.database.exec(`
+        ALTER TABLE proxied_requests ADD COLUMN is_project_path_inherited INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE proxied_requests ADD COLUMN upstream_request_id TEXT;
+        UPDATE proxied_requests SET upstream_request_id = json_extract(response_headers_json, '$."request-id"')
+        WHERE response_headers_json IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS proxied_requests_upstream_request_id ON proxied_requests (upstream_request_id);
+      `);
+      const messagesRequestIds = this.database
+        .prepare("SELECT id FROM proxied_requests WHERE request_path LIKE '/v1/messages%' ORDER BY id")
+        .all() as Array<{ id: number }>;
+      const readRequest = this.database.prepare('SELECT session_id, request_body_zstd FROM proxied_requests WHERE id = ?');
+      const updateProjectPath = this.database.prepare(
+        'UPDATE proxied_requests SET project_path = ?, is_project_path_inherited = ? WHERE id = ?',
+      );
+      for (const { id: proxiedRequestId } of messagesRequestIds) {
+        const storedRequest = readRequest.get(proxiedRequestId) as { session_id: string | null; request_body_zstd: unknown };
+        let requestBody: unknown = null;
+        try {
+          requestBody = JSON.parse(decompressText(storedRequest.request_body_zstd) ?? 'null');
+        } catch {
+          // A body that is not JSON has no project path.
+        }
+        const requestContext = extractClaudeCodeRequestContext({}, requestBody);
+        const projectPathAssignment = this.assignProjectPath(
+          proxiedRequestId,
+          storedRequest.session_id,
+          requestContext.projectPath,
+          requestContext.previousUpstreamRequestId,
+        );
+        updateProjectPath.run(projectPathAssignment.projectPath, projectPathAssignment.isProjectPathInherited ? 1 : 0, proxiedRequestId);
+      }
+      this.database.exec('COMMIT');
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  /**
+   * Gives a request without an environment block the project of the previous request in its conversation.
+   * Requests outside a conversation, such as session title requests, get the project of the latest earlier request in the session.
+   */
+  private assignProjectPath(
+    beforeProxiedRequestId: number,
+    sessionId: string | null,
+    projectPath: string | null,
+    previousUpstreamRequestId: string | null,
+  ): { projectPath: string | null; isProjectPathInherited: boolean } {
+    if (projectPath !== null) return { projectPath, isProjectPathInherited: false };
+    const previousRequest = previousUpstreamRequestId
+      ? (this.database
+          .prepare('SELECT project_path FROM proxied_requests WHERE upstream_request_id = ? AND project_path IS NOT NULL')
+          .get(previousUpstreamRequestId) as { project_path: string } | undefined)
+      : undefined;
+    const latestSessionRequest =
+      previousRequest || !sessionId
+        ? undefined
+        : (this.database
+            .prepare(
+              `SELECT project_path FROM proxied_requests
+               WHERE session_id = ? AND id < ? AND project_path IS NOT NULL ORDER BY id DESC LIMIT 1`,
+            )
+            .get(sessionId, beforeProxiedRequestId) as { project_path: string } | undefined);
+    const inheritedProjectPath = (previousRequest ?? latestSessionRequest)?.project_path ?? null;
+    return { projectPath: inheritedProjectPath, isProjectPathInherited: inheritedProjectPath !== null };
   }
 
   insertStartedRequest(startedRequest: StartedProxiedRequest): number {
+    const projectPathAssignment = this.assignProjectPath(
+      Number.MAX_SAFE_INTEGER,
+      startedRequest.sessionId,
+      startedRequest.projectPath,
+      startedRequest.previousUpstreamRequestId,
+    );
     const insertResult = this.database
       .prepare(
         `INSERT INTO proxied_requests (
           started_at, http_method, request_path, client_auth_kind, model, is_streaming, session_id, project_path,
-          request_headers_json, request_body_zstd
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          is_project_path_inherited, request_headers_json, request_body_zstd
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         startedRequest.startedAt,
@@ -163,7 +261,8 @@ export class RequestDatabase {
         startedRequest.model,
         startedRequest.isStreaming ? 1 : 0,
         startedRequest.sessionId,
-        startedRequest.projectPath,
+        projectPathAssignment.projectPath,
+        projectPathAssignment.isProjectPathInherited ? 1 : 0,
         startedRequest.requestHeadersJson,
         startedRequest.requestBody.length > 0 ? zstdCompressSync(startedRequest.requestBody) : null,
       );
@@ -181,7 +280,7 @@ export class RequestDatabase {
           completed_at = ?, duration_ms = ?, route_kind = ?, route_name = ?, status_code = ?, error_type = ?,
           stop_reason = ?, input_tokens = ?, output_tokens = ?, cache_creation_5m_input_tokens = ?,
           cache_creation_1h_input_tokens = ?, cache_read_input_tokens = ?, estimated_cost_usd = ?,
-          response_headers_json = ?, response_body_zstd = ?
+          response_headers_json = ?, response_body_zstd = ?, upstream_request_id = json_extract(?, '$."request-id"')
         WHERE id = ?`,
       )
       .run(
@@ -200,6 +299,7 @@ export class RequestDatabase {
         completedRequest.estimatedCostUsd,
         completedRequest.responseHeadersJson,
         completedRequest.responseBody === null ? null : zstdCompressSync(Buffer.from(completedRequest.responseBody)),
+        completedRequest.responseHeadersJson,
         proxiedRequestId,
       );
     this.database
@@ -259,30 +359,12 @@ export class RequestDatabase {
       .run(settingName, settingValue);
   }
 
-  listProxiedRequests(filters: ProxiedRequestFilters): Record<string, unknown>[] {
-    const whereClauses: string[] = [];
-    const parameters: SQLInputValue[] = [];
-    const addCondition = (whereClause: string, ...clauseParameters: SQLInputValue[]) => {
-      whereClauses.push(whereClause);
-      parameters.push(...clauseParameters);
-    };
-
-    if (filters.startedFrom) addCondition('r.started_at >= ?', filters.startedFrom);
-    if (filters.startedTo) addCondition('r.started_at < ?', filters.startedTo);
-    if (filters.model) addCondition('r.model = ?', filters.model);
-    if (filters.routeName) addCondition('r.route_name = ?', filters.routeName);
-    if (filters.projectPath) addCondition('r.project_path = ?', filters.projectPath);
-    if (filters.sessionId) addCondition('r.session_id = ?', filters.sessionId);
-    if (filters.beforeId) addCondition('r.id < ?', filters.beforeId);
-    if (filters.status === 'pending') addCondition('r.completed_at IS NULL');
-    else if (filters.status && /^[1-5]xx$/.test(filters.status)) {
-      const statusClass = Number(filters.status[0]);
-      addCondition('r.status_code >= ? AND r.status_code < ?', statusClass * 100, statusClass * 100 + 100);
-    } else if (filters.status && /^\d{3}$/.test(filters.status)) addCondition('r.status_code = ?', Number(filters.status));
-    if (filters.searchText?.trim()) {
-      addCondition('s.proxied_request_search MATCH ?', toFullTextSearchQuery(filters.searchText));
+  listProxiedRequests(filters: ProxiedRequestFilters, page: ProxiedRequestPage): Record<string, unknown>[] {
+    const { whereClauses, parameters } = buildProxiedRequestConditions(filters);
+    if (page.beforeId) {
+      whereClauses.push('r.id < ?');
+      parameters.push(page.beforeId);
     }
-
     return this.database
       .prepare(
         `SELECT ${proxiedRequestSummaryColumns}
@@ -290,7 +372,21 @@ export class RequestDatabase {
          ${whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : ''}
          ORDER BY r.id DESC LIMIT ?`,
       )
-      .all(...parameters, filters.limit) as Record<string, unknown>[];
+      .all(...parameters, page.limit) as Record<string, unknown>[];
+  }
+
+  /** Sums the estimated cost of the requests that match the filters: in total, since `last30DaysFrom` and since `last24HoursFrom`. */
+  summariseProxiedRequestCosts(filters: ProxiedRequestFilters, last30DaysFrom: string, last24HoursFrom: string): Record<string, unknown> {
+    const { whereClauses, parameters } = buildProxiedRequestConditions(filters);
+    return this.database
+      .prepare(
+        `SELECT SUM(r.estimated_cost_usd) AS total_cost_usd,
+                SUM(CASE WHEN r.started_at >= ? THEN r.estimated_cost_usd END) AS last_30_days_cost_usd,
+                SUM(CASE WHEN r.started_at >= ? THEN r.estimated_cost_usd END) AS last_24_hours_cost_usd
+         FROM proxied_requests r JOIN proxied_request_search s ON s.rowid = r.id
+         ${whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : ''}`,
+      )
+      .get(last30DaysFrom, last24HoursFrom, ...parameters) as Record<string, unknown>;
   }
 
   readProxiedRequest(proxiedRequestId: number): Record<string, unknown> | null {
@@ -369,6 +465,32 @@ export class RequestDatabase {
   close(): void {
     this.database.close();
   }
+}
+
+/** Builds the WHERE conditions for the filters. The query must join `proxied_requests r` and `proxied_request_search s`. */
+function buildProxiedRequestConditions(filters: ProxiedRequestFilters): { whereClauses: string[]; parameters: SQLInputValue[] } {
+  const whereClauses: string[] = [];
+  const parameters: SQLInputValue[] = [];
+  const addCondition = (whereClause: string, ...clauseParameters: SQLInputValue[]) => {
+    whereClauses.push(whereClause);
+    parameters.push(...clauseParameters);
+  };
+
+  if (filters.startedFrom) addCondition('r.started_at >= ?', filters.startedFrom);
+  if (filters.startedTo) addCondition('r.started_at < ?', filters.startedTo);
+  if (filters.model) addCondition('r.model = ?', filters.model);
+  if (filters.routeName) addCondition('r.route_name = ?', filters.routeName);
+  if (filters.projectPath) addCondition('r.project_path = ?', filters.projectPath);
+  if (filters.sessionId) addCondition('r.session_id = ?', filters.sessionId);
+  if (filters.status === 'pending') addCondition('r.completed_at IS NULL');
+  else if (filters.status && /^[1-5]xx$/.test(filters.status)) {
+    const statusClass = Number(filters.status[0]);
+    addCondition('r.status_code >= ? AND r.status_code < ?', statusClass * 100, statusClass * 100 + 100);
+  } else if (filters.status && /^\d{3}$/.test(filters.status)) addCondition('r.status_code = ?', Number(filters.status));
+  if (filters.searchText?.trim()) {
+    addCondition('s.proxied_request_search MATCH ?', toFullTextSearchQuery(filters.searchText));
+  }
+  return { whereClauses, parameters };
 }
 
 /** Quotes each word, so search text never reaches FTS5 as query syntax. A trailing `*` keeps prefix matching. */

@@ -4,7 +4,13 @@ export interface ClaudeCodeRequestContext {
   model: string | null;
   isStreaming: boolean;
   sessionId: string | null;
+  /** The directory Claude Code started in. Null when the request carries no environment block. */
   projectPath: string | null;
+  /**
+   * The upstream `request-id` of the previous request in the same conversation, from `cc_prev_req` in the billing
+   * header. Claude Code 2.1.304 sends only the new messages after the first request, without the environment block.
+   */
+  previousUpstreamRequestId: string | null;
   /** The text of the last user message, without `<system-reminder>` blocks. Empty when that message holds only tool results. */
   lastUserMessageText: string;
   /**
@@ -20,6 +26,12 @@ const sessionIdPattern = /session_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
  * Quoted text, such as a CLAUDE.md that mentions the line, does not match.
  */
 const workingDirectoryPattern = /^ *-? *(?:Primary working directory|Working directory): (\/[^\n]*)$/m;
+/**
+ * Matches the section that Claude Code adds when the shell changes directory, up to the next blank line.
+ * Its "Primary working directory" line is the new shell directory, not the project.
+ */
+const environmentUpdatePattern = /^# Environment update\n(?:.+(?:\n|$))*/gm;
+const previousUpstreamRequestIdPattern = /\bcc_prev_req=(req_\w+)/;
 const systemReminderPattern = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
 
 /** Reads the model, session ID, project path and last user message from a Messages API request sent by Claude Code. */
@@ -34,6 +46,7 @@ export function extractClaudeCodeRequestContext(
     isStreaming: requestFields.stream === true,
     sessionId: extractSessionId(requestHeaders, requestFields.metadata),
     projectPath: extractProjectPath(requestFields.system, messages),
+    previousUpstreamRequestId: previousUpstreamRequestIdPattern.exec(readContentText(requestFields.system))?.[1] ?? null,
     lastUserMessageText: extractLastUserMessageText(messages),
     lastUserMessageToolResultText: extractLastUserMessageToolResultText(messages),
   };
@@ -57,10 +70,12 @@ function extractSessionId(requestHeaders: IncomingHttpHeaders, metadata: unknown
 /**
  * Finds the "Primary working directory" line of Claude Code's environment block. Claude Code puts that block
  * in the top-level `system` field or in an early `role: "system"` message, so the search stops at the first match.
+ * The search skips environment update sections, so the project stays the directory that Claude Code started in.
  */
 function extractProjectPath(system: unknown, messages: Array<Record<string, unknown>>): string | null {
   for (const content of [system, ...messages.map((message) => message.content)]) {
-    const workingDirectory = workingDirectoryPattern.exec(readContentText(content))?.[1]?.trim();
+    const contentText = readContentText(content).replace(environmentUpdatePattern, '');
+    const workingDirectory = workingDirectoryPattern.exec(contentText)?.[1]?.trim();
     if (workingDirectory) return workingDirectory;
   }
   return null;

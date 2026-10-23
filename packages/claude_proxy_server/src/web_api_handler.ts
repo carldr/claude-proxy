@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { RequestDatabase } from './request_database.ts';
+import type { ProxiedRequestFilters, RequestDatabase } from './request_database.ts';
 import type { RoutingMode, RoutingState } from './routing_state.ts';
 import { readIncomingBody } from './upstream_http_request.ts';
 
@@ -28,6 +28,16 @@ export async function handleWebApiRequest(
   const queryParameters = requestUrl.searchParams;
   const readQueryParameter = (parameterName: string) => queryParameters.get(parameterName) || undefined;
   const { requestDatabase, routingState } = dependencies;
+  const readProxiedRequestFilters = (): ProxiedRequestFilters => ({
+    startedFrom: readQueryParameter('startedFrom'),
+    startedTo: readQueryParameter('startedTo'),
+    model: readQueryParameter('model'),
+    routeName: readQueryParameter('routeName'),
+    status: readQueryParameter('status'),
+    projectPath: readQueryParameter('projectPath'),
+    sessionId: readQueryParameter('sessionId'),
+    searchText: readQueryParameter('searchText'),
+  });
 
   try {
     if (clientRequest.method === 'GET' && apiPath === 'routing-status') {
@@ -59,18 +69,23 @@ export async function handleWebApiRequest(
       return sendJson(
         clientResponse,
         200,
-        requestDatabase.listProxiedRequests({
-          startedFrom: readQueryParameter('startedFrom'),
-          startedTo: readQueryParameter('startedTo'),
-          model: readQueryParameter('model'),
-          routeName: readQueryParameter('routeName'),
-          status: readQueryParameter('status'),
-          projectPath: readQueryParameter('projectPath'),
-          sessionId: readQueryParameter('sessionId'),
-          searchText: readQueryParameter('searchText'),
+        requestDatabase.listProxiedRequests(readProxiedRequestFilters(), {
           beforeId: readQueryParameter('beforeId') ? Number(readQueryParameter('beforeId')) : undefined,
           limit: Math.min(Number(readQueryParameter('limit') ?? 100), 500),
         }),
+      );
+    }
+
+    if (clientRequest.method === 'GET' && apiPath === 'proxied-request-cost-totals') {
+      const dayMs = 24 * 60 * 60 * 1000;
+      return sendJson(
+        clientResponse,
+        200,
+        requestDatabase.summariseProxiedRequestCosts(
+          readProxiedRequestFilters(),
+          new Date(Date.now() - 30 * dayMs).toISOString(),
+          new Date(Date.now() - dayMs).toISOString(),
+        ),
       );
     }
 

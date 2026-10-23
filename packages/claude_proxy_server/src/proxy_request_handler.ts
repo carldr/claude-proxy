@@ -73,6 +73,7 @@ export async function handleProxyRequest(
       isStreaming: requestContext.isStreaming,
       sessionId: requestContext.sessionId,
       projectPath: requestContext.projectPath,
+      previousUpstreamRequestId: requestContext.previousUpstreamRequestId,
       requestHeadersJson: JSON.stringify(redactCredentialHeaders(clientRequest.headers)),
       requestBody,
       lastUserMessageText: requestContext.lastUserMessageText,

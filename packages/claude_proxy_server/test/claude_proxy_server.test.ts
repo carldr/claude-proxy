@@ -132,7 +132,7 @@ describe('claude-proxy', () => {
     claudeProxyBaseUrl = `http://127.0.0.1:${(claudeProxyServer.httpServer.address() as AddressInfo).port}`;
   }
 
-  function sendClaudeCodeRequest() {
+  function sendClaudeCodeRequest(requestBody: unknown = claudeCodeRequestBody) {
     return fetch(`${claudeProxyBaseUrl}/v1/messages?beta=true`, {
       method: 'POST',
       headers: {
@@ -140,7 +140,7 @@ describe('claude-proxy', () => {
         'anthropic-beta': 'claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14',
         'content-type': 'application/json',
       },
-      body: JSON.stringify(claudeCodeRequestBody),
+      body: JSON.stringify(requestBody),
     });
   }
 
@@ -181,6 +181,52 @@ describe('claude-proxy', () => {
     }
     assert.equal((await readApi('proxied-requests?searchText=quoted')).length, 0);
     assert.equal((await readApi('routing-status')).subscriptionWeeklyUtilization, 0.5);
+  });
+
+  test('gives requests without an environment block the project of the request they continue, shown as inherited', async () => {
+    let upstreamRequestNumber = 0;
+    await startProxy(
+      (_, upstreamResponse) => sendStreamingMessage(upstreamResponse, 'Hello zebra world', { 'request-id': `req_${++upstreamRequestNumber}` }),
+      [],
+    );
+    const continuationSystem = (previousUpstreamRequestId: string) => [
+      { type: 'text', text: `x-anthropic-billing-header: cc_version=2.1.304.626; cc_prev_req=${previousUpstreamRequestId};` },
+    ];
+    await (await sendClaudeCodeRequest()).text();
+    await (await sendClaudeCodeRequest({
+      ...claudeCodeRequestBody,
+      system: continuationSystem('req_1'),
+      messages: [
+        { role: 'user', content: 'Go on' },
+        { role: 'system', content: [{ type: 'text', text: 'Hook output.\n\n# Environment update\n - Primary working directory: /Users/example_user/Development/example_project/src (was /Users/example_user/Development/example_project)' }] },
+      ],
+    })).text();
+    await (await sendClaudeCodeRequest({ ...claudeCodeRequestBody, system: 'Summarise the session', messages: [{ role: 'user', content: 'Title?' }] })).text();
+    await (await sendClaudeCodeRequest({ ...claudeCodeRequestBody, metadata: {}, system: 'No session', messages: [{ role: 'user', content: 'Hi' }] })).text();
+
+    const projectAssignments = (await readApi('proxied-requests'))
+      .reverse()
+      .map((requestSummary: { project_path: string | null; is_project_path_inherited: number }) => [requestSummary.project_path, requestSummary.is_project_path_inherited]);
+    assert.deepEqual(projectAssignments, [
+      ['/Users/example_user/Development/example_project', 0],
+      ['/Users/example_user/Development/example_project', 1],
+      ['/Users/example_user/Development/example_project', 1],
+      [null, 0],
+    ]);
+    assert.deepEqual((await readApi('request-filter-options')).projectPaths, ['/Users/example_user/Development/example_project']);
+  });
+
+  test('sums the cost of the filtered requests in total, over 30 days and over 24 hours', async () => {
+    await startProxy((_, upstreamResponse) => sendStreamingMessage(upstreamResponse, 'Hello zebra world'), []);
+    await (await sendClaudeCodeRequest()).text();
+    await (await sendClaudeCodeRequest()).text();
+    const requestCostUsd = (1000 * 4 + 2000 * 0.2 + 500 * 20) / 1e6;
+
+    const sessionCostTotals = await readApi(`proxied-request-cost-totals?sessionId=${sessionId}`);
+    for (const costTotalName of ['total_cost_usd', 'last_30_days_cost_usd', 'last_24_hours_cost_usd']) {
+      assert.ok(Math.abs(sessionCostTotals[costTotalName] - 2 * requestCostUsd) < 1e-12, costTotalName);
+    }
+    assert.equal((await readApi('proxied-request-cost-totals?projectPath=/elsewhere')).total_cost_usd, null);
   });
 
   test('moves to the API key when the subscription rejects a request for the weekly limit', async () => {
