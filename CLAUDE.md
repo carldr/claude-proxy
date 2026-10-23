@@ -68,6 +68,8 @@ Do not change the setup back to `ANTHROPIC_BASE_URL`. Claude Code turns off Remo
 - `/api/oauth/usage` returns `seven_day.utilization` as a percentage and `seven_day.resets_at` as ISO 8601. The endpoint is undocumented.
 - Claude Code sends the session ID in the `x-claude-code-session-id` header. It also sends the ID in `metadata.user_id`, which is a JSON string.
 - The `Primary working directory:` line is in a mid-conversation `role: "system"` message, not in top-level `system`. `extractProjectPath` therefore searches `system` and then each message in order.
+- When the shell changes directory, Claude Code adds a `# Environment update` section with `Primary working directory: <new> (was <old>)`. `extractProjectPath` ignores that section, so the project is the directory that Claude Code started in.
+- After the first request of a conversation, Claude Code 2.1.304 sends only the new messages, without the environment block. The billing header in `system` has `cc_prev_req=<request-id of the previous response>`. `RequestDatabase` gives such a request the project of that previous request, or else of the latest earlier request in the session, and sets `is_project_path_inherited`.
 
 ## Full-text search
 

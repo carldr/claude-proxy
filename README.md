@@ -19,7 +19,7 @@ claude-proxy is a local proxy between Claude Code and the Anthropic API. It reco
    Other errors, such as a 429 for the 5-hour window or a 529 overload, go back to Claude Code unchanged. When no route is left, Claude Code gets the last error.
 5. Every subscription response reports weekly usage in its `anthropic-ratelimit-unified-7d-utilization` header. The proxy records this value.
 6. While the weekly limit is reached, the proxy reads your usage from Anthropic every 5 minutes. In auto mode, traffic returns to the subscription when usage is below 100%, or when the weekly window resets.
-7. The proxy stores each request and its response in `~/.claude-proxy/requests.sqlite`. Bodies are compressed with zstd. The database also stores the Claude Code session ID, the project directory, token counts and an estimated cost.
+7. The proxy stores each request and its response in `~/.claude-proxy/requests.sqlite`. Bodies are compressed with zstd. The database also stores the Claude Code session ID, the project directory, token counts and an estimated cost. The project directory is the directory that Claude Code started in.
 
 Requests that carry their own API key, and requests to paths other than `/v1/messages`, go to `api.anthropic.com` unchanged.
 
@@ -163,7 +163,7 @@ api_key_routes:
 Open `http://127.0.0.1:4100/_proxy/`.
 
 - The top panel shows the active route and the weekly usage. It also has the routing mode switch and the selector for the first API key.
-- **Requests** lists every request. You can filter by project, model, route, status, date and session. The search box finds text in your prompts, Claude's replies, tool calls and tool output.
+- **Requests** lists every request. You can filter by project, model, route, status, date and session. The search box finds text in your prompts, Claude's replies, tool calls and tool output. The filter bar shows the estimated cost of the matching requests: in total, in the last 30 days and in the last 24 hours. A grey project comes from an earlier request in the same session, because the request itself does not name its directory.
 - **Sessions** lists Claude Code sessions by project, each with its first prompt and a `claude --resume` command.
 - **Costs** shows estimated cost per day and route. Subscription rows show what the same requests would cost at API prices.
 

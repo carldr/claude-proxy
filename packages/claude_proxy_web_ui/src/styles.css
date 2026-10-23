@@ -301,6 +301,13 @@ a {
   padding: 0 4px;
 }
 
+.request-cost-totals {
+  display: inline-flex;
+  gap: 12px;
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
 .table-scroller {
   overflow: auto;
   min-height: 0;

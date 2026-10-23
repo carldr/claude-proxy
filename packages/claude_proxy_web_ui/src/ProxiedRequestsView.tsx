@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   claudeProxyApi,
+  type ProxiedRequestCostTotals,
   type ProxiedRequestFilters,
   type ProxiedRequestSummary,
   type RequestFilterOptions,
@@ -36,6 +37,7 @@ export function ProxiedRequestsView({ filters, onFiltersChange, findRouteAppeara
   const [proxiedRequests, setProxiedRequests] = useState<ProxiedRequestSummary[]>([]);
   const [hasOlderRequests, setHasOlderRequests] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
+  const [costTotals, setCostTotals] = useState<ProxiedRequestCostTotals | null>(null);
   const [filterOptions, setFilterOptions] = useState<RequestFilterOptions>({ models: [], routeNames: [], projectPaths: [] });
   const [selectedRequestId, setSelectedRequestId] = useState<number | null>(null);
   const [searchTextDraft, setSearchTextDraft] = useState(filters.searchText);
@@ -69,6 +71,8 @@ export function ProxiedRequestsView({ filters, onFiltersChange, findRouteAppeara
     5000,
     [filters],
   );
+
+  usePolling(() => claudeProxyApi.readProxiedRequestCostTotals(filters).then(setCostTotals, () => setCostTotals(null)), 5000, [filters]);
 
   useEffect(() => {
     setProxiedRequests([]);
@@ -133,6 +137,13 @@ export function ProxiedRequestsView({ filters, onFiltersChange, findRouteAppeara
               </button>
             </span>
           )}
+          {costTotals && (
+            <span className="request-cost-totals" title="Estimated cost of the requests that match the filters">
+              <span>Total {formatCostUsd(costTotals.total_cost_usd ?? 0)}</span>
+              <span>30 days {formatCostUsd(costTotals.last_30_days_cost_usd ?? 0)}</span>
+              <span>24 hours {formatCostUsd(costTotals.last_24_hours_cost_usd ?? 0)}</span>
+            </span>
+          )}
         </div>
 
         <div className="table-scroller">
@@ -178,7 +189,12 @@ export function ProxiedRequestsView({ filters, onFiltersChange, findRouteAppeara
                       </span>
                     </td>
                     <td>{proxiedRequest.model ?? <span className="muted">{proxiedRequest.request_path}</span>}</td>
-                    <td className="project-name" title={proxiedRequest.project_path ?? ''}>{shortenProjectPath(proxiedRequest.project_path)}</td>
+                    <td
+                      className={proxiedRequest.is_project_path_inherited ? 'project-name muted' : 'project-name'}
+                      title={proxiedRequest.is_project_path_inherited ? `${proxiedRequest.project_path} (from an earlier request in the session)` : (proxiedRequest.project_path ?? '')}
+                    >
+                      {shortenProjectPath(proxiedRequest.project_path)}
+                    </td>
                     <td className="prompt-preview" title={proxiedRequest.user_text_preview ?? ''}>
                       {proxiedRequest.user_text_preview || <span className="muted">{proxiedRequest.stop_reason === null ? '' : 'Tool results'}</span>}
                     </td>

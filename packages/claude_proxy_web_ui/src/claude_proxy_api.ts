@@ -34,6 +34,8 @@ export interface ProxiedRequestSummary {
   is_streaming: number;
   session_id: string | null;
   project_path: string | null;
+  /** 1 when the request carried no environment block and `project_path` comes from an earlier request in its session. */
+  is_project_path_inherited: number;
   status_code: number | null;
   error_type: string | null;
   stop_reason: string | null;
@@ -90,6 +92,12 @@ export const emptyProxiedRequestFilters: ProxiedRequestFilters = {
   startedTo: '',
 };
 
+export interface ProxiedRequestCostTotals {
+  total_cost_usd: number | null;
+  last_30_days_cost_usd: number | null;
+  last_24_hours_cost_usd: number | null;
+}
+
 export interface RequestFilterOptions {
   models: string[];
   routeNames: string[];
@@ -121,6 +129,18 @@ export interface DailyRouteCost {
 
 const apiBasePath = '/_proxy/api/';
 
+function buildFilterQueryParameters(filters: ProxiedRequestFilters): URLSearchParams {
+  const queryParameters = new URLSearchParams();
+  for (const [filterName, filterValue] of Object.entries(filters)) {
+    if (filterValue === '') continue;
+    // The date inputs give local dates; the database stores UTC timestamps.
+    if (filterName === 'startedFrom') queryParameters.set(filterName, new Date(`${filterValue}T00:00`).toISOString());
+    else if (filterName === 'startedTo') queryParameters.set(filterName, new Date(new Date(`${filterValue}T00:00`).getTime() + 86_400_000).toISOString());
+    else queryParameters.set(filterName, filterValue);
+  }
+  return queryParameters;
+}
+
 async function requestApi<ResponseType>(apiPath: string, requestInit?: RequestInit): Promise<ResponseType> {
   const apiResponse = await fetch(`${apiBasePath}${apiPath}`, requestInit);
   const responseValue = await apiResponse.json();
@@ -134,18 +154,13 @@ export const claudeProxyApi = {
     requestApi<RoutingStatus>('routing-settings', { method: 'PUT', body: JSON.stringify(routingSettings) }),
   checkSubscriptionUsage: () => requestApi<RoutingStatus>('subscription-usage-check', { method: 'POST' }),
   listProxiedRequests: (filters: ProxiedRequestFilters, beforeId?: number) => {
-    const queryParameters = new URLSearchParams();
-    for (const [filterName, filterValue] of Object.entries(filters)) {
-      if (filterValue === '') continue;
-      // The date inputs give local dates; the database stores UTC timestamps.
-      if (filterName === 'startedFrom') queryParameters.set(filterName, new Date(`${filterValue}T00:00`).toISOString());
-      else if (filterName === 'startedTo') queryParameters.set(filterName, new Date(new Date(`${filterValue}T00:00`).getTime() + 86_400_000).toISOString());
-      else queryParameters.set(filterName, filterValue);
-    }
+    const queryParameters = buildFilterQueryParameters(filters);
     if (beforeId !== undefined) queryParameters.set('beforeId', String(beforeId));
     queryParameters.set('limit', '100');
     return requestApi<ProxiedRequestSummary[]>(`proxied-requests?${queryParameters}`);
   },
+  readProxiedRequestCostTotals: (filters: ProxiedRequestFilters) =>
+    requestApi<ProxiedRequestCostTotals>(`proxied-request-cost-totals?${buildFilterQueryParameters(filters)}`),
   readProxiedRequest: (proxiedRequestId: number) => requestApi<ProxiedRequestDetail>(`proxied-requests/${proxiedRequestId}`),
   readRequestFilterOptions: () => requestApi<RequestFilterOptions>('request-filter-options'),
   listSessions: (projectPath: string) =>
