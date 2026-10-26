@@ -66,11 +66,27 @@ function isLocalRequest(clientRequest: IncomingMessage, httpServer: Server): boo
   return origin === undefined || localHosts.some((localHost) => origin === `http://${localHost}`);
 }
 
+/**
+ * Sets the mode of a file or directory. When the change fails, for example because another user owns the file,
+ * the function logs one warning and the proxy starts anyway.
+ */
+export function changeFileModeOrWarn(
+  filePath: string,
+  fileMode: number,
+  changeFileMode: (filePath: string, fileMode: number) => void = fs.chmodSync,
+): void {
+  try {
+    changeFileMode(filePath, fileMode);
+  } catch (error) {
+    console.error(`claude-proxy could not set the mode of ${filePath} to ${fileMode.toString(8)}: ${(error as Error).message}`);
+  }
+}
+
 /** Creates the proxy server. The caller starts it with `httpServer.listen`. */
 export function createClaudeProxyServer(options: ClaudeProxyServerOptions): ClaudeProxyServer {
   // `requests.sqlite` holds the refresh tokens of the subscription accounts, so only the user can read the directory.
   fs.mkdirSync(options.claudeProxyDirectory, { recursive: true, mode: 0o700 });
-  fs.chmodSync(options.claudeProxyDirectory, 0o700);
+  changeFileModeOrWarn(options.claudeProxyDirectory, 0o700);
   for (const configFileName of ['subscription_accounts.yml', 'pricing.yml']) {
     const configFilePath = path.join(options.claudeProxyDirectory, configFileName);
     if (!fs.existsSync(configFilePath)) fs.copyFileSync(path.join(defaultConfigDirectory, configFileName), configFilePath);
@@ -96,7 +112,7 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
   const subscriptionAccountStore = new SubscriptionAccountStore(path.join(options.claudeProxyDirectory, 'requests.sqlite'));
   // SQLite creates the database, WAL and shared-memory files with the default mode. The proxy makes them private.
   for (const fileName of fs.readdirSync(options.claudeProxyDirectory)) {
-    if (fileName.startsWith('requests.sqlite')) fs.chmodSync(path.join(options.claudeProxyDirectory, fileName), 0o600);
+    if (fileName.startsWith('requests.sqlite')) changeFileModeOrWarn(path.join(options.claudeProxyDirectory, fileName), 0o600);
   }
   const readSubscriptionAccountsConfig = () => subscriptionAccountsConfigFile.read().config;
   // The router and the usage monitor share one refresher, so that one refresh at a time runs for each grant.
