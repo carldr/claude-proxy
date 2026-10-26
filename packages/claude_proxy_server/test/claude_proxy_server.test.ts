@@ -946,6 +946,39 @@ describe('claude-proxy', () => {
       assert.equal(claudeProxyServer.subscriptionAccountStore.readGrant('Personal')?.accessToken, 'login-access-token');
     });
 
+    test('clears the usage windows and limit blocks of a name when another Claude account logs in to it', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
+      const { subscriptionAccountStore } = claudeProxyServer;
+      storeTestGrant('Personal', 'personal-token');
+      subscriptionAccountStore.mergeUsageWindows('Personal', [{ usageWindowName: '7d', utilization: 0.9, resetsAt: null }], new Date().toISOString());
+      subscriptionAccountStore.writeLimitBlock({
+        subscriptionAccountName: 'Personal',
+        blockedModel: '',
+        rateLimitWindow: 'seven_day',
+        blockedUntil: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      });
+      answerLoginWithIdentity('other-account-uuid', 'other-organization-uuid', 'other@example.com');
+      const { loginBody } = await startLogin('Personal');
+      const callbackResponse = await callCallback(`code=the-code&state=${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
+
+      assert.equal(callbackResponse.status, 302);
+      assert.equal(subscriptionAccountStore.readGrant('Personal')?.accountUuid, 'other-account-uuid');
+      assert.deepEqual(subscriptionAccountStore.readUsageWindows('Personal').usageWindows, []);
+      assert.deepEqual(subscriptionAccountStore.readActiveLimitBlocks(new Date()), []);
+    });
+
+    test('keeps the usage windows of a name when the same Claude account logs in to it again', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
+      const { subscriptionAccountStore } = claudeProxyServer;
+      storeTestGrant('Personal', 'personal-token');
+      subscriptionAccountStore.mergeUsageWindows('Personal', [{ usageWindowName: '7d', utilization: 0.9, resetsAt: null }], new Date().toISOString());
+      answerLoginWithIdentity('Personal-account-uuid', 'Personal-organization-uuid', 'person@example.com');
+      const { loginBody } = await startLogin('Personal');
+      await callCallback(`code=the-code&state=${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
+
+      assert.equal(subscriptionAccountStore.readUsageWindows('Personal').usageWindows.length, 1);
+    });
+
     test('refuses a login whose account is stored under another name', async () => {
       await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
       storeTestGrant('Work', 'work-token');

@@ -96,6 +96,12 @@ export class SubscriptionAccountLoginHandler {
       // A name that is no longer configured is the old name of a renamed account. The login deletes its rows.
       subscriptionAccountStore.deleteSubscriptionAccount(grantOfSameIdentity.subscriptionAccountName);
     }
+    const replacedGrant = subscriptionAccountStore.readGrant(grant.subscriptionAccountName);
+    const isReplacedGrantOfOtherIdentity =
+      replacedGrant !== null &&
+      (replacedGrant.accountUuid !== grant.accountUuid || replacedGrant.organizationUuid !== grant.organizationUuid);
+    // The usage windows and the limit blocks describe the Claude account of the replaced grant.
+    if (isReplacedGrantOfOtherIdentity) subscriptionAccountStore.deleteUsageWindowsAndLimitBlocks(grant.subscriptionAccountName);
     subscriptionAccountStore.writeGrant(grant);
   }
 }

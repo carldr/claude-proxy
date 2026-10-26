@@ -217,9 +217,22 @@ export class SubscriptionAccountStore {
 
   /** Deletes the grant, the usage windows and the limit blocks of the subscription account. */
   deleteSubscriptionAccount(subscriptionAccountName: string): void {
+    this.deleteSubscriptionAccountRows(subscriptionAccountName, [
+      'subscription_account_grants',
+      'subscription_account_usage_windows',
+      'subscription_account_limit_blocks',
+    ]);
+  }
+
+  /** Deletes the usage windows and the limit blocks of the subscription account, and keeps its grant. */
+  deleteUsageWindowsAndLimitBlocks(subscriptionAccountName: string): void {
+    this.deleteSubscriptionAccountRows(subscriptionAccountName, ['subscription_account_usage_windows', 'subscription_account_limit_blocks']);
+  }
+
+  private deleteSubscriptionAccountRows(subscriptionAccountName: string, tableNames: string[]): void {
     this.database.exec('BEGIN');
     try {
-      for (const tableName of ['subscription_account_grants', 'subscription_account_usage_windows', 'subscription_account_limit_blocks']) {
+      for (const tableName of tableNames) {
         this.database.prepare(`DELETE FROM ${tableName} WHERE subscription_account_name = ?`).run(subscriptionAccountName);
       }
       this.database.exec('COMMIT');
