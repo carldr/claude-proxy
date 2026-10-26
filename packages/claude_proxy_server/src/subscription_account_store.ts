@@ -215,6 +215,20 @@ export class SubscriptionAccountStore {
       .run(subscriptionAccountName, blockedModel);
   }
 
+  /** Deletes the grant, the usage windows and the limit blocks of the subscription account. */
+  deleteSubscriptionAccount(subscriptionAccountName: string): void {
+    this.database.exec('BEGIN');
+    try {
+      for (const tableName of ['subscription_account_grants', 'subscription_account_usage_windows', 'subscription_account_limit_blocks']) {
+        this.database.prepare(`DELETE FROM ${tableName} WHERE subscription_account_name = ?`).run(subscriptionAccountName);
+      }
+      this.database.exec('COMMIT');
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   close(): void {
     this.database.close();
   }
