@@ -9,8 +9,8 @@ claude-proxy is a local proxy between Claude Code and the Anthropic API. It reco
 1. Claude Code sends its traffic to `http://127.0.0.1:4100`, because `HTTPS_PROXY` points there. The proxy decrypts the connections to `api.anthropic.com` with a certificate from mkcert. It passes connections to other hosts through unchanged. Claude Code still sees `api.anthropic.com` as its API host, so Remote Control and its other first-party features stay on. With `ANTHROPIC_BASE_URL` set to the proxy, Claude Code turns off Remote Control.
 2. For a `/v1/messages` request, the proxy finds the project directory of the request. It picks the first entry of `project_routes` in `subscription_accounts.yml` whose pattern matches. Without a match, it picks `default_subscription_account`.
 3. The proxy replaces Claude Code's OAuth token with its own access token for that subscription account. It changes nothing else in the request. The proxy gets its tokens from its own login to each account, described in [Log in to the subscription accounts](#log-in-to-the-subscription-accounts). It never reads, copies or refreshes Claude Code's own login.
-4. The proxy moves the request to the next subscription account in two cases. In the first case, an account rejects the request with a 429 for its 5-hour window or a weekly window. In the second case, an account is at or above `failover_utilization` (default 0.98) of its 5-hour or weekly window. The proxy avoids that account before it rejects anything. Programs that use the account without the proxy, such as cron jobs on other servers, keep the last 2%.
-5. A rejection for the 5-hour window or the weekly window blocks the account until the window resets. A rejection for the weekly window of one model, such as Fable, blocks only that model on that account. Other errors, such as a 401 or a 529 overload, return to Claude Code unchanged. When every account is blocked, Claude Code gets the rejection of the project's own account.
+4. The proxy moves the request to the next subscription account when an account rejects the request with a 429 for its 5-hour window or a weekly window. An account can also have its own `failover_utilization`. The proxy avoids an account at or above that fraction of its 5-hour or weekly window, before the account rejects anything. The example sets 0.98 on Work, so programs that use Work without the proxy, such as cron jobs on other servers, keep the last 2%. The proxy still sends a project's requests to its own account at that threshold when every other account is blocked.
+5. A rejection for the 5-hour window or the weekly window blocks the account until the window resets. A rejection for the weekly window of one model, such as Fable, blocks only that model on that account. The proxy tries a blocked account last, after every account that is not blocked, because a blocked account can still have a little capacity. Other errors, such as a 401 or a 529 overload, return to Claude Code unchanged. When every account rejects the request, Claude Code gets the rejection of the project's own account.
 6. Every response to a request that the proxy sends with its own access token reports the usage of its account in the `anthropic-ratelimit-unified-*` headers. The proxy records them. A response sent with Claude Code's own token does not update any account. The proxy also reads the usage of each account from Anthropic every 5 minutes.
 7. The proxy stores each request and its response in `~/.claude-proxy/requests.sqlite`. Bodies are compressed with zstd. The database also stores the Claude Code session ID, the project directory, token counts and an estimated cost. The project directory is the directory that Claude Code started in.
 
@@ -137,7 +137,7 @@ All configuration is in `~/.claude-proxy/`. The proxy reads each file again when
 
 | File | Contents |
 | --- | --- |
-| `subscription_accounts.yml` | The subscription accounts, the project routes and the failover utilization. It holds no credentials. |
+| `subscription_accounts.yml` | The subscription accounts with their failover utilization, and the project routes. It holds no credentials. |
 | `pricing.yml` | Prices per million tokens for each model. The proxy uses them to estimate costs. |
 | `api.anthropic.com.pem`, `api.anthropic.com-key.pem` | The mkcert certificate and key that the proxy uses to decrypt `api.anthropic.com` traffic. |
 | `requests.sqlite` | The recorded requests, the grants of the subscription accounts, their last known usage and their blocks. |
@@ -149,6 +149,7 @@ Example `subscription_accounts.yml`:
 subscription_accounts:
   - name: Work
     colour: "#a1c63d"
+    failover_utilization: 0.98
   - name: Personal
     colour: "#ba8048"
 project_routes:
@@ -157,15 +158,14 @@ project_routes:
   - project_path_pattern: ~/Development/work-dev
     subscription_account: Work
 default_subscription_account: Personal
-failover_utilization: 0.98
 ```
 
 | Key | Meaning |
 | --- | --- |
-| `subscription_accounts` | The accounts, in failover order. Each has a `name` and a `colour`. |
+| `subscription_accounts` | The accounts, in failover order. Each has a `name`, a `colour` and an optional `failover_utilization`. |
 | `project_routes` | The first route whose `project_path_pattern` matches the project wins. The pattern is a glob. `~` means your home directory. A pattern also matches every subdirectory of a matching directory. |
-| `default_subscription_account` | The account for a project that no route matches, and for a request with no project. Without this key, such a request tries the accounts in file order and skips each blocked account. |
-| `failover_utilization` | A fraction above 0 and at most 1. The proxy avoids an account at or above this fraction of its 5-hour or weekly window. The default is 0.98. |
+| `failover_utilization` | A key of one account. It is a fraction above 0 and at most 1. The proxy avoids the account at or above this fraction of its 5-hour or weekly window. The default is 1, which means no threshold. A top-level `failover_utilization` is a validation error. |
+| `default_subscription_account` | The account for a project that no route matches, and for a request with no project. Without this key, such a request tries the accounts in file order, with each blocked account last. |
 
 The project is the directory that Claude Code started in. A request without that information uses the project of the earlier request in the same session.
 
@@ -192,7 +192,7 @@ Open `http://127.0.0.1:4100/_proxy/`.
 
 ## Menu bar
 
-The menu bar shows one pie per subscription account, in file order. Each pie has the colour of its account and shows the usage of its weekly window. A pie turns red when the proxy avoids the account: at the limit of its 5-hour or weekly window, or at `failover_utilization` of either window. A pie is full and red when a weekly window blocks the account. When every pie is red, no account can take requests. A grey `!` means the proxy does not answer. The app reads the status once a minute.
+The menu bar shows one pie per subscription account, in file order. Each pie has the colour of its account and shows the usage of its weekly window. A pie turns red when the proxy avoids the account: at the limit of its 5-hour or weekly window, or at its `failover_utilization` of either window. A pie is full and red when a weekly window blocks the account. When every pie is red, no account can take requests. A grey `!` means the proxy does not answer. The app reads the status once a minute.
 
 ## Commands
 

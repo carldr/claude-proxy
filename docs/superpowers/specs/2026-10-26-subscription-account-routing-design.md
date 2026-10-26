@@ -70,6 +70,7 @@ The spike scripts are in the scratchpad, not in the repository. The OAuth consta
 subscription_accounts:
   - name: Work
     colour: "#a1c63d"
+    failover_utilization: 0.98
   - name: Personal
     colour: "#ba8048"
 project_routes:
@@ -78,9 +79,9 @@ project_routes:
   - project_path_pattern: ~/Development/work-dev
     subscription_account: Work
 default_subscription_account: Personal
-failover_utilization: 0.98
 ```
 
+- `failover_utilization` is an optional key of each account, a number above 0 and at most 1. The default is 1, which means no threshold. A top-level `failover_utilization` is a validation error that says to move the key onto the account.
 - `project_routes` are checked in order, and the first match wins. A pattern also matches every subdirectory of a matching directory. `~` expands to the home directory.
 - A request whose project matches no pattern goes to `default_subscription_account`. So does a request with no project.
 - The project is the directory that Claude Code started in, as `extractProjectPath` reads it today. A request without an environment block uses the project inherited from the earlier request in the session, as `RequestDatabase` does today. Routing must use the inherited project too.
@@ -90,16 +91,17 @@ failover_utilization: 0.98
 
 - Only OAuth requests to `/v1/messages*` are routed. The proxy replaces the `Authorization: Bearer` header and changes nothing else.
 - Every other request goes to `api.anthropic.com` unchanged, with Claude Code's own token. This covers Remote Control, `/api/*`, telemetry and the MCP registry. An `x-api-key` request also goes through unchanged.
-- The plan for one request is the project's account first, then the other accounts in file order. An account that is known to be blocked goes to the end of the plan, as the subscription does today. A blocked account may still have a little capacity.
+- The plan for one request is the project's account first, then the other accounts in file order. An account that a rejection blocks goes to the end of the plan, after every account that is not blocked. A blocked account may still have a little capacity.
+- The plan omits an account at or above its own `failover_utilization`. The project's own account is the exception: it goes into the plan when no account is free of blocks.
 
 ### Failover
 
 - Trigger: a 429 whose rate-limit headers show a rejection by a 5-hour window or by any weekly window. The weekly windows include per-model ones such as Fable's. `readSubscriptionWeeklyRateLimit` now detects only `seven_day*`, and it must also detect `five_hour`.
-- Second trigger: an account whose 5-hour or weekly (7d) utilisation is at or above `failover_utilization` counts as blocked for routing. The default is 0.98. The utilisation comes from the latest response headers or usage poll. The user's cron jobs on other servers use Work without the proxy, and the threshold leaves them the last 2%. The account is usable again when a header or poll shows both windows below the threshold.
+- Second trigger: an account whose 5-hour or weekly (7d) utilisation is at or above its own `failover_utilization` stays out of the plan. The utilisation comes from the latest response headers or usage poll. The user's cron jobs on other servers use Work without the proxy, so only Work has a threshold, 0.98, which leaves them the last 2%. The account is usable again when a header or poll shows both windows below the threshold.
 - On the trigger, the proxy retries the request on the next account in the plan. It does this before it sends anything to Claude Code.
 - The account is blocked until the reset time of the window that rejected it.
 - *Claude's call:* a rejection by a per-model window, such as Fable's weekly window, blocks only requests for that model on that account. Requests for other models stay on the account. A per-model block does not turn the menu bar pie red. That time comes from the reset header for that window, or else from the usage poll.
-- If every account is blocked, Claude Code gets the rejection from the project's own account. Claude Code then shows its normal limit message.
+- If every planned account rejects the request, Claude Code gets the rejection from the project's own account, not from the account tried last. The proxy holds that rejection until the last route also rejects. If the plan does not have the project's own account, Claude Code gets the last rejection. Claude Code then shows its normal limit message.
 - Any other response, such as a 401, a 5xx or a network error, goes to Claude Code unchanged, with no failover. Both accounts are on the same tier, so a model that one account serves, the other account also serves.
 - Two side effects are accepted. The first request on the other account writes the conversation to that account's prompt cache again. The response's rate-limit headers describe the other account, so Claude Code's usage warnings do too.
 
@@ -111,7 +113,7 @@ failover_utilization: 0.98
 ### Menu bar
 
 - One pie per account, in file order, filled in the account's colour. The pie shows the account's weekly (7d) usage. There are no letters.
-- The pie turns red when the account is blocked by its weekly limit, so it is full and red. The pie also turns red when the account's 5-hour limit blocks the account. Then the pie keeps showing the weekly percentage. *Claude's call:* an account at or above `failover_utilization` also shows red, because the proxy no longer routes to it first.
+- The pie turns red when the account is blocked by its weekly limit, so it is full and red. The pie also turns red when the account's 5-hour limit blocks the account. Then the pie keeps showing the weekly percentage. *Claude's call:* an account at or above its `failover_utilization` also shows red, because the proxy no longer routes to it first.
 - Two red pies tell the user that neither account can take requests.
 - When the proxy does not answer, the menu bar keeps today's grey "!" dot.
 - The app keeps its refresh timing: once a minute, and every 5 seconds while the proxy does not answer.
