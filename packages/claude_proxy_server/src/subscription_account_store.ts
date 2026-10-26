@@ -172,7 +172,12 @@ export class SubscriptionAccountStore {
     }
   }
 
+  /** Keeps an active block that ends later, so a 5-hour block cannot shorten a weekly block of the same scope. */
   writeLimitBlock(limitBlock: SubscriptionAccountLimitBlock): void {
+    const existingBlock = this.database
+      .prepare('SELECT blocked_until FROM subscription_account_limit_blocks WHERE subscription_account_name = ? AND blocked_model = ?')
+      .get(limitBlock.subscriptionAccountName, limitBlock.blockedModel) as { blocked_until: string } | undefined;
+    if (existingBlock && existingBlock.blocked_until > limitBlock.blockedUntil && existingBlock.blocked_until > new Date().toISOString()) return;
     this.database
       .prepare(
         `INSERT OR REPLACE INTO subscription_account_limit_blocks (

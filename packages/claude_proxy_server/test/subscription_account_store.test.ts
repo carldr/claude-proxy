@@ -99,3 +99,14 @@ test('keeps a whole-account block and a model block apart', () => {
     assert.deepEqual(store.readActiveLimitBlocks(new Date()), [modelBlock]);
   });
 });
+
+test('keeps an active block that ends later when a shorter block of the same scope arrives', () => {
+  withStore((store) => {
+    const now = Date.now();
+    const weeklyBlock = { subscriptionAccountName: 'Personal', blockedModel: '', rateLimitWindow: 'seven_day', blockedUntil: new Date(now + 3 * 86_400_000).toISOString() };
+    const fiveHourBlock = { subscriptionAccountName: 'Personal', blockedModel: '', rateLimitWindow: 'five_hour', blockedUntil: new Date(now + 2 * 3_600_000).toISOString() };
+    store.writeLimitBlock(weeklyBlock);
+    store.writeLimitBlock(fiveHourBlock);
+    assert.deepEqual(store.readActiveLimitBlocks(new Date(now)), [weeklyBlock]);
+  });
+});

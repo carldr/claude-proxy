@@ -716,6 +716,16 @@ describe('claude-proxy', () => {
       assert.equal(findStatusAccount(await readApi('subscription-account-status'), 'Personal').isBlocked, true);
     });
 
+    test('keeps a weekly whole-account block while the poll shows the weekly window full and the 5-hour window free', async () => {
+      await startProxy(respondWithWeeklyUsage({ [personalAuthorization]: 100 }));
+      storeTestGrant('Personal', 'personal-token');
+      const store = claudeProxyServer.subscriptionAccountStore;
+      store.writeLimitBlock({ subscriptionAccountName: 'Personal', blockedModel: '', rateLimitWindow: 'seven_day', blockedUntil: new Date(Date.now() + 3 * 86400_000).toISOString() });
+      store.writeLimitBlock({ subscriptionAccountName: 'Personal', blockedModel: '', rateLimitWindow: 'five_hour', blockedUntil: new Date(Date.now() + 2 * 3600_000).toISOString() });
+      await claudeProxyServer.subscriptionAccountUsageMonitor.checkAllSubscriptionAccountUsage();
+      assert.equal(findStatusAccount(await readApi('subscription-account-status'), 'Personal').isBlocked, true);
+    });
+
     test('reports login_required for an account without a grant or with a rejected refresh token', async () => {
       await startProxy(respondWithWeeklyUsage({ [workAuthorization]: 10, [personalAuthorization]: 10 }));
       storeTestGrant('Personal', 'personal-token');
