@@ -2,16 +2,16 @@
 
 claude-proxy is a local proxy between Claude Code and the Anthropic API. It records Claude Code's Messages API requests in SQLite. It also sends each project's requests to the Claude subscription account that you chose for that project. When an account reaches a limit, the proxy moves the request to your other account. Claude Code does not see the change.
 
-![The claude-proxy web UI: the subscription accounts panel with usage bars, and the request log](docs/web_ui_requests.png)
+![The claude-proxy web UI: account usage, recorded requests and their details](docs/web_ui_requests.png)
 
 ## How it works
 
 1. Claude Code sends its traffic to `http://127.0.0.1:4100`, because `HTTPS_PROXY` points there. The proxy decrypts the connections to `api.anthropic.com` with a certificate from mkcert. It passes connections to other hosts through unchanged. Claude Code still sees `api.anthropic.com` as its API host, so Remote Control and its other first-party features stay on. With `ANTHROPIC_BASE_URL` set to the proxy, Claude Code turns off Remote Control.
 2. For a `/v1/messages` request, the proxy finds the project directory of the request. It picks the first entry of `project_routes` in `subscription_accounts.yml` whose pattern matches. Without a match, it picks `default_subscription_account`.
 3. The proxy replaces Claude Code's OAuth token with its own access token for that subscription account. It changes nothing else in the request. The proxy gets its tokens from its own login to each account, described in [Log in to the subscription accounts](#log-in-to-the-subscription-accounts). It never reads, copies or refreshes Claude Code's own login.
-4. The proxy moves the request to the next subscription account in two cases. The first case is a 429 response that rejects the request for the 5-hour window or for a weekly window. The second case is an account at or above `failover_utilization` (default 0.98) of its 5-hour or weekly window. The proxy avoids that account before it rejects anything, so programs that use the account without the proxy, such as cron jobs on other servers, keep the last 2%.
-5. A rejection by a weekly window of one model, such as Fable, blocks only that model on that account. Other errors, such as a 401 or a 529 overload, go back to Claude Code unchanged. When every account is blocked, Claude Code gets the rejection of the project's own account.
-6. Every response reports the usage of its account in the `anthropic-ratelimit-unified-*` headers. The proxy records them. It also reads the usage of each account from Anthropic every 5 minutes.
+4. The proxy moves the request to the next subscription account in two cases. In the first case, an account rejects the request with a 429 for its 5-hour window or a weekly window. In the second case, an account is at or above `failover_utilization` (default 0.98) of its 5-hour or weekly window. The proxy avoids that account before it rejects anything. Programs that use the account without the proxy, such as cron jobs on other servers, keep the last 2%.
+5. A rejection for the 5-hour window or the weekly window blocks the account until the window resets. A rejection for the weekly window of one model, such as Fable, blocks only that model on that account. Other errors, such as a 401 or a 529 overload, return to Claude Code unchanged. When every account is blocked, Claude Code gets the rejection of the project's own account.
+6. Every response to a request that the proxy sends with its own access token reports the usage of its account in the `anthropic-ratelimit-unified-*` headers. The proxy records them. A response sent with Claude Code's own token does not update any account. The proxy also reads the usage of each account from Anthropic every 5 minutes.
 7. The proxy stores each request and its response in `~/.claude-proxy/requests.sqlite`. Bodies are compressed with zstd. The database also stores the Claude Code session ID, the project directory, token counts and an estimated cost. The project directory is the directory that Claude Code started in.
 
 The proxy swaps the token on `/v1/messages*` only. Requests that carry their own API key, and requests to other paths, go to `api.anthropic.com` unchanged with Claude Code's own token. Remote Control, `/usage` and telemetry stay on the account that Claude Code is logged in to.
@@ -162,7 +162,7 @@ failover_utilization: 0.98
 | --- | --- |
 | `subscription_accounts` | The accounts, in failover order. Each has a `name` and a `colour`. |
 | `project_routes` | The first route whose `project_path_pattern` matches the project wins. The pattern is a glob. `~` means your home directory. A pattern also matches every subdirectory of a matching directory. |
-| `default_subscription_account` | The account for a project that no route matches, and for a request with no project. |
+| `default_subscription_account` | The account for a project that no route matches, and for a request with no project. Without this key, such a request tries the accounts in file order and skips each blocked account. |
 | `failover_utilization` | A fraction above 0 and at most 1. The proxy avoids an account at or above this fraction of its 5-hour or weekly window. The default is 0.98. |
 
 The project is the directory that Claude Code started in. A request without that information uses the project of the earlier request in the same session.
@@ -175,7 +175,8 @@ The proxy needs its own login to each account. This login gives the proxy a gran
 
 1. Open the web UI.
 2. Press **Log in** on an account.
-3. Sign in to that Claude account in the browser. Use a different Claude account for each subscription account.
+3. Log in to that Claude account in the browser.
+4. Use a different Claude account for each subscription account.
 
 An account without a live grant sends Claude Code's own token unchanged. The web UI shows **Log in** again when the grant stops working.
 
@@ -190,7 +191,7 @@ Open `http://127.0.0.1:4100/_proxy/`.
 
 ## Menu bar
 
-The menu bar shows one pie per subscription account, in file order. Each pie has the colour of its account and shows the weekly usage. A pie turns red when the proxy avoids the account: at the 5-hour or weekly limit, or at `failover_utilization`. Two red pies mean that neither account can take requests. A grey `!` means the proxy does not answer. The app reads the status once a minute.
+The menu bar shows one pie per subscription account, in file order. Each pie has the colour of its account and shows the weekly usage. A pie turns red when the proxy avoids the account: at the 5-hour or weekly limit, or at `failover_utilization`. When every pie is red, no account can take requests. A grey `!` means the proxy does not answer. The app reads the status once a minute.
 
 ## Commands
 
