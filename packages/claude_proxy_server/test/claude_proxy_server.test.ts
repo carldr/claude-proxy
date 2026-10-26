@@ -593,6 +593,20 @@ describe('claude-proxy', () => {
     assert.deepEqual(readUpstreamSubscriptionAccountNames(), ['claude_code']);
   });
 
+  test('allows only the user to read the proxy directory and the request database', async () => {
+    fs.chmodSync(claudeProxyDirectory, 0o755);
+    fs.writeFileSync(path.join(claudeProxyDirectory, 'requests.sqlite'), '');
+    fs.chmodSync(path.join(claudeProxyDirectory, 'requests.sqlite'), 0o644);
+    await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
+
+    assert.equal(fs.statSync(claudeProxyDirectory).mode & 0o777, 0o700);
+    const requestDatabaseFileNames = fs.readdirSync(claudeProxyDirectory).filter((fileName) => fileName.startsWith('requests.sqlite'));
+    assert.ok(requestDatabaseFileNames.length > 0);
+    for (const requestDatabaseFileName of requestDatabaseFileNames) {
+      assert.equal(fs.statSync(path.join(claudeProxyDirectory, requestDatabaseFileName)).mode & 0o777, 0o600, requestDatabaseFileName);
+    }
+  });
+
   test('does not send a request upstream when the client closes it while the routes are planned', async () => {
     await startProxy((_, upstreamResponse) => sendStreamingMessage(upstreamResponse, 'Hello'));
     storeBothTestGrants();
