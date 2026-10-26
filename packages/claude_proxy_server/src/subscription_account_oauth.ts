@@ -167,7 +167,14 @@ export class SubscriptionAccountGrantRefresher {
         if (this.isGrantStillRefreshed(grant)) this.subscriptionAccountStore.writeGrant({ ...grant, isRefreshTokenRejected: true });
         return this.readLiveAccessTokenOfStoredGrant(grant);
       }
-      throw error;
+      // A transient failure does not make the stored access token invalid. The refresher uses it until it expires.
+      const liveAccessToken = this.readLiveAccessTokenOfStoredGrant(grant);
+      if (liveAccessToken === null) throw error;
+      console.error(
+        `claude-proxy could not refresh the grant of subscription account ${grant.subscriptionAccountName}, ` +
+          `and uses its access token until it expires: ${(error as Error).message}`,
+      );
+      return liveAccessToken;
     }
     if (!tokenResponse.access_token || typeof tokenResponse.expires_in !== 'number') {
       throw new Error('Token endpoint answered a refresh without an access token or an expiry.');

@@ -233,6 +233,18 @@ test('keeps the grant on a transient failure', async () => {
   });
 });
 
+test('returns the stored token that is still valid when the refresh fails transiently', async () => {
+  await withFakeTokenServer(answerJson(500, { error: 'server_error' }), async ({ endpoints, receivedRequests }) => {
+    await withStore(async (store) => {
+      store.writeGrant(personalGrant(Date.now() + 2 * 60_000));
+      const refresher = new SubscriptionAccountGrantRefresher(store, endpoints);
+      assert.equal(await refresher.readAccessToken('Personal'), 'old-access-token');
+      assert.equal(receivedRequests.length, 1);
+      assert.equal(store.readGrant('Personal')?.refreshToken, 'old-refresh-token');
+    });
+  });
+});
+
 test('drops the result of a refresh when a login stored a new grant while the refresh was in flight', async () => {
   let answerSlowRefresh!: () => void;
   const slowRefreshAnswerGate = new Promise<void>((resolve) => (answerSlowRefresh = resolve));
