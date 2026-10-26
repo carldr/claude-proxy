@@ -84,10 +84,17 @@ export class SubscriptionAccountLoginHandler {
     const { subscriptionAccountStore } = this.dependencies;
     const grantOfSameIdentity = subscriptionAccountStore.findGrantByAccountIdentity(grant.accountUuid, grant.organizationUuid);
     if (grantOfSameIdentity && grantOfSameIdentity.subscriptionAccountName !== grant.subscriptionAccountName) {
-      throw new Error(
-        `This Claude account is already logged in as ${grantOfSameIdentity.subscriptionAccountName}. ` +
-          `Log in to ${grant.subscriptionAccountName} with a different Claude account.`,
+      const isOtherNameConfigured = this.dependencies.readSubscriptionAccountsConfig().subscriptionAccounts.some(
+        (subscriptionAccount) => subscriptionAccount.name === grantOfSameIdentity.subscriptionAccountName,
       );
+      if (isOtherNameConfigured) {
+        throw new Error(
+          `This Claude account is already logged in as ${grantOfSameIdentity.subscriptionAccountName}. ` +
+            `Log in to ${grant.subscriptionAccountName} with a different Claude account.`,
+        );
+      }
+      // A name that is no longer configured is the old name of a renamed account. The login deletes its rows.
+      subscriptionAccountStore.deleteSubscriptionAccount(grantOfSameIdentity.subscriptionAccountName);
     }
     subscriptionAccountStore.writeGrant(grant);
   }

@@ -966,6 +966,31 @@ describe('claude-proxy', () => {
       assert.equal(claudeProxyServer.subscriptionAccountStore.readGrant('Work')?.accessToken, 'work-token');
     });
 
+    test('accepts a login whose account is stored under a name that is no longer configured, and deletes that name', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
+      const { subscriptionAccountStore } = claudeProxyServer;
+      storeTestGrant('OldName', 'old-name-token');
+      subscriptionAccountStore.mergeUsageWindows('OldName', [{ usageWindowName: '7d', utilization: 0.5, resetsAt: null }], new Date().toISOString());
+      subscriptionAccountStore.writeLimitBlock({
+        subscriptionAccountName: 'OldName',
+        blockedModel: '',
+        rateLimitWindow: 'seven_day',
+        blockedUntil: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      });
+      answerLoginWithIdentity('OldName-account-uuid', 'OldName-organization-uuid', 'old@example.com');
+      const { loginBody } = await startLogin('Personal');
+      const callbackResponse = await callCallback(`code=the-code&state=${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
+
+      assert.equal(callbackResponse.status, 302);
+      assert.equal(subscriptionAccountStore.readGrant('Personal')?.accessToken, 'login-access-token');
+      assert.equal(subscriptionAccountStore.readGrant('OldName'), null);
+      assert.deepEqual(subscriptionAccountStore.readUsageWindows('OldName').usageWindows, []);
+      assert.deepEqual(
+        subscriptionAccountStore.readActiveLimitBlocks(new Date()).filter((limitBlock) => limitBlock.subscriptionAccountName === 'OldName'),
+        [],
+      );
+    });
+
     test('rejects a callback with an unknown state', async () => {
       await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
       answerLoginWithIdentity('person-account-uuid', 'person-organization-uuid', 'person@example.com');
