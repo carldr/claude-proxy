@@ -92,7 +92,7 @@ default_subscription_account: Personal
 - Only OAuth requests to `/v1/messages*` are routed. The proxy replaces the `Authorization: Bearer` header and changes nothing else.
 - Every other request goes to `api.anthropic.com` unchanged, with Claude Code's own token. This covers Remote Control, `/api/*`, telemetry and the MCP registry. An `x-api-key` request also goes through unchanged.
 - The plan for one request is the project's account first, then the other accounts in file order. An account that a rejection blocks goes to the end of the plan, after every account that is not blocked. A blocked account may still have a little capacity.
-- The plan omits an account at or above its own `failover_utilization`. The project's own account is the exception: it goes into the plan when no account is free of blocks.
+- The plan omits an account at or above its own `failover_utilization`. The project's own account is the exception: it goes last, after the rejection-blocked accounts, as the last resort.
 
 ### Failover
 

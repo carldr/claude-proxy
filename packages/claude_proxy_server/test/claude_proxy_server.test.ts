@@ -524,6 +524,40 @@ describe('claude-proxy', () => {
       assert.equal(personalStatus.failoverUtilization, 0.98);
     });
 
+    /** Starts the proxy with 0.98 on Work only, and stores a Work weekly utilization of 0.98. */
+    async function startProxyWithWorkAtFailoverUtilization(respondAsAnthropic: FakeUpstreamResponder) {
+      await startProxy(respondAsAnthropic, subscriptionAccountsYaml.replace('colour: "#a1c63d" }', 'colour: "#a1c63d", failover_utilization: 0.98 }'));
+      storeBothTestGrants();
+      claudeProxyServer.subscriptionAccountStore.mergeUsageWindows(
+        'Work',
+        [{ usageWindowName: '7d', utilization: 0.98, resetsAt: new Date(Date.now() + 86400_000).toISOString() }],
+        new Date().toISOString(),
+      );
+    }
+
+    test('tries the project\'s own account at its failover utilization last, after another account rejects', async () => {
+      await startProxyWithWorkAtFailoverUtilization((receivedRequest, upstreamResponse) => {
+        if (receivedRequest.headers.authorization === personalAuthorization) sendRateLimitRejection(upstreamResponse, 'Personal', fiveHourLimitRejectionHeaders);
+        else sendStreamingMessage(upstreamResponse, 'Hello from Work');
+      });
+      const proxyResponse = await sendClaudeCodeRequest(buildClaudeCodeRequestBody(clientProjectPath));
+      assert.equal(proxyResponse.status, 200);
+      assert.match(await proxyResponse.text(), /from Work/);
+      assert.deepEqual(readUpstreamSubscriptionAccountNames(), ['Personal', 'Work']);
+    });
+
+    test('tries a rejection-blocked account before the project\'s own account at its failover utilization', async () => {
+      await startProxyWithWorkAtFailoverUtilization((_, upstreamResponse) => sendStreamingMessage(upstreamResponse, 'Hello'));
+      claudeProxyServer.subscriptionAccountStore.writeLimitBlock({
+        subscriptionAccountName: 'Personal',
+        blockedModel: '',
+        rateLimitWindow: 'five_hour',
+        blockedUntil: new Date(Date.now() + 3600_000).toISOString(),
+      });
+      await (await sendClaudeCodeRequest(buildClaudeCodeRequestBody(clientProjectPath))).text();
+      assert.deepEqual(readUpstreamSubscriptionAccountNames(), ['Personal']);
+    });
+
     test('keeps an account at its failover utilization out of the plan', async () => {
       await startProxy((receivedRequest, upstreamResponse) =>
         sendRateLimitRejection(upstreamResponse, readSubscriptionAccountName(receivedRequest), fiveHourLimitRejectionHeaders),
