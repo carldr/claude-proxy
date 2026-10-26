@@ -9,6 +9,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import tls from 'node:tls';
 import { createClaudeProxyServer, type ClaudeProxyServer } from '../src/claude_proxy_server.ts';
+import { parseSubscriptionAccountUsageReport } from '../src/subscription_account_usage_monitor.ts';
 
 interface ReceivedUpstreamRequest {
   upstreamName: string;
@@ -146,6 +147,23 @@ function readSubscriptionAccountName(receivedRequest: ReceivedUpstreamRequest): 
       return String(receivedRequest.headers.authorization);
   }
 }
+
+test('parses five_hour, seven_day and per-model windows from the usage report', () => {
+  assert.deepEqual(
+    parseSubscriptionAccountUsageReport({
+      five_hour: { utilization: 9, resets_at: '2026-11-01T00:00:00.000Z' },
+      seven_day: { utilization: 93, resets_at: '2026-11-01T00:00:00.000Z' },
+      limits: [{ scope: { model: { display_name: 'Fable' } }, percent: 59, resets_at: '2026-11-01T00:00:00.000Z' }, { scope: {}, percent: 5 }],
+    }),
+    [
+      { usageWindowName: '5h', utilization: 0.09, resetsAt: '2026-11-01T00:00:00.000Z' },
+      { usageWindowName: '7d', utilization: 0.93, resetsAt: '2026-11-01T00:00:00.000Z' },
+      { usageWindowName: 'Fable', utilization: 0.59, resetsAt: '2026-11-01T00:00:00.000Z' },
+    ],
+  );
+  assert.deepEqual(parseSubscriptionAccountUsageReport({ five_hour: null, limits: null }), []);
+  assert.deepEqual(parseSubscriptionAccountUsageReport('nonsense'), []);
+});
 
 describe('claude-proxy', () => {
   let claudeProxyDirectory: string;
@@ -623,6 +641,124 @@ describe('claude-proxy', () => {
       const { statusCode } = await openConnectTunnel('api.anthropic.com:443');
       assert.equal(statusCode, 502);
       assert.equal(receivedRequests.length, 0);
+    });
+  });
+  describe('subscription account status', () => {
+    const usageResetsAt = '2026-11-01T00:00:00.000Z';
+
+    /** Answers GET /api/oauth/usage with the weekly percentage given for the account that owns the token. */
+    function respondWithWeeklyUsage(weeklyPercentByAuthorization: Record<string, number>): FakeUpstreamResponder {
+      return (receivedRequest, upstreamResponse) => {
+        const weeklyPercent = weeklyPercentByAuthorization[String(receivedRequest.headers.authorization)];
+        if (receivedRequest.path !== '/api/oauth/usage' || weeklyPercent === undefined) return sendJsonResponse(upstreamResponse, 404, {});
+        sendJsonResponse(upstreamResponse, 200, {
+          five_hour: { utilization: 9, resets_at: usageResetsAt },
+          seven_day: { utilization: weeklyPercent, resets_at: usageResetsAt },
+        });
+      };
+    }
+
+    function findStatusAccount(status: any, subscriptionAccountName: string) {
+      return status.subscriptionAccounts.find((statusAccount: any) => statusAccount.subscriptionAccountName === subscriptionAccountName);
+    }
+
+    test('polls each logged-in account with its own grant', async () => {
+      await startProxy(respondWithWeeklyUsage({ [workAuthorization]: 93, [personalAuthorization]: 40 }));
+      storeBothTestGrants();
+
+      const usageCheckResponse = await fetch(`${claudeProxyBaseUrl}/_proxy/api/subscription-account-usage-check`, { method: 'POST' });
+      const status = await usageCheckResponse.json();
+
+      assert.deepEqual(status.usageCheckErrors, []);
+      assert.deepEqual(
+        receivedRequests.filter((receivedRequest) => receivedRequest.path === '/api/oauth/usage').map(readSubscriptionAccountName).sort(),
+        ['Personal', 'Work'],
+      );
+      const workRequest = receivedRequests.find((receivedRequest) => readSubscriptionAccountName(receivedRequest) === 'Work')!;
+      assert.equal(workRequest.headers['anthropic-beta'], 'oauth-2025-04-20');
+      const readStatus = await readApi('subscription-account-status');
+      assert.equal(findStatusAccount(readStatus, 'Work').weeklyUtilization, 0.93);
+      assert.equal(findStatusAccount(readStatus, 'Personal').weeklyUtilization, 0.4);
+      assert.equal(findStatusAccount(readStatus, 'Work').colour, '#a1c63d');
+      assert.ok(findStatusAccount(readStatus, 'Work').usageCheckedAt);
+    });
+
+    test('clears a whole-account block when the usage poll shows room again', async () => {
+      await startProxy(respondWithWeeklyUsage({ [personalAuthorization]: 40 }));
+      storeTestGrant('Personal', 'personal-token');
+      claudeProxyServer.subscriptionAccountStore.writeLimitBlock({
+        subscriptionAccountName: 'Personal',
+        blockedModel: '',
+        rateLimitWindow: 'seven_day',
+        blockedUntil: new Date(Date.now() + 86400_000).toISOString(),
+      });
+      const blockedStatus = findStatusAccount(await readApi('subscription-account-status'), 'Personal');
+      assert.equal(blockedStatus.isBlocked, true);
+      assert.ok(blockedStatus.blockedUntil);
+
+      assert.deepEqual(await claudeProxyServer.subscriptionAccountUsageMonitor.checkAllSubscriptionAccountUsage(), []);
+
+      const clearedStatus = findStatusAccount(await readApi('subscription-account-status'), 'Personal');
+      assert.equal(clearedStatus.isBlocked, false);
+      assert.equal(clearedStatus.blockedUntil, null);
+    });
+
+    test('keeps a whole-account block while the usage poll shows no room', async () => {
+      await startProxy(respondWithWeeklyUsage({ [personalAuthorization]: 100 }));
+      storeTestGrant('Personal', 'personal-token');
+      claudeProxyServer.subscriptionAccountStore.writeLimitBlock({
+        subscriptionAccountName: 'Personal',
+        blockedModel: '',
+        rateLimitWindow: 'seven_day',
+        blockedUntil: new Date(Date.now() + 86400_000).toISOString(),
+      });
+      await claudeProxyServer.subscriptionAccountUsageMonitor.checkAllSubscriptionAccountUsage();
+      assert.equal(findStatusAccount(await readApi('subscription-account-status'), 'Personal').isBlocked, true);
+    });
+
+    test('reports login_required for an account without a grant or with a rejected refresh token', async () => {
+      await startProxy(respondWithWeeklyUsage({ [workAuthorization]: 10, [personalAuthorization]: 10 }));
+      storeTestGrant('Personal', 'personal-token');
+      claudeProxyServer.subscriptionAccountStore.writeGrant({
+        ...claudeProxyServer.subscriptionAccountStore.readGrant('Personal')!,
+        isRefreshTokenRejected: true,
+      });
+
+      const loginRequiredErrors = await claudeProxyServer.subscriptionAccountUsageMonitor.checkAllSubscriptionAccountUsage();
+
+      assert.deepEqual(loginRequiredErrors, []);
+      assert.equal(receivedRequests.filter((receivedRequest) => receivedRequest.path === '/api/oauth/usage').length, 0);
+      const status = await readApi('subscription-account-status');
+      assert.equal(findStatusAccount(status, 'Work').loginState, 'login_required');
+      assert.equal(findStatusAccount(status, 'Personal').loginState, 'login_required');
+      storeTestGrant('Work', 'work-token');
+      assert.equal(findStatusAccount(await readApi('subscription-account-status'), 'Work').loginState, 'logged_in');
+    });
+
+    test('reports one error for each account whose usage poll fails, and polls the others', async () => {
+      await startProxy(respondWithWeeklyUsage({ [personalAuthorization]: 40 }));
+      storeBothTestGrants();
+      const usageCheckErrors = await claudeProxyServer.subscriptionAccountUsageMonitor.checkAllSubscriptionAccountUsage();
+      assert.equal(usageCheckErrors.length, 1);
+      assert.match(usageCheckErrors[0]!, /^Work: .*404/);
+      assert.equal(findStatusAccount(await readApi('subscription-account-status'), 'Personal').weeklyUtilization, 0.4);
+    });
+
+    test('updates usage from the headers of every routed response', async () => {
+      await startProxy((_, upstreamResponse) => sendStreamingMessage(upstreamResponse, 'Hello', { 'anthropic-ratelimit-unified-7d-utilization': '0.5' }));
+      storeBothTestGrants();
+      await (await sendClaudeCodeRequest()).text();
+      assert.equal(findStatusAccount(await readApi('subscription-account-status'), 'Personal').weeklyUtilization, 0.5);
+    });
+
+    test('lists the configuration errors of subscription_accounts.yml', async () => {
+      await startProxy(
+        (_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}),
+        subscriptionAccountsYaml.replace('subscription_account: Work }', 'subscription_account: Unknown }'),
+      );
+      const status = await readApi('subscription-account-status');
+      assert.ok(status.configErrors.length > 0);
+      assert.match(status.configErrors[0], /Unknown/);
     });
   });
 });
