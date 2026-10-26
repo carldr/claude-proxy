@@ -395,6 +395,31 @@ Added on 2026-10-26, after Task 6, and run before Task 7. The user's cron jobs o
 
 - [ ] **Step 5: Commit** `git commit -m "Log in to subscription accounts from the web UI through a loopback OAuth callback"`
 
+### Task 12: Keep the last valid configuration when a config file has an error
+
+Added on 2026-10-26, after Task 7, and run before Task 8. The user edits `subscription_accounts.yml` while the proxy runs. A typo saved partway through an edit must not send every request to Claude Code's own account.
+
+**Files:**
+- Modify: `packages/claude_proxy_server/src/yaml_config_file.ts`
+- Test: `packages/claude_proxy_server/test/yaml_config_file.test.ts` (create), `test/claude_proxy_server.test.ts`
+
+**Interfaces:**
+- `YamlConfigFile.read()` keeps its return shape, `{ config, loadError }`. After a parse or validation error, `config` is the last config that loaded without an error, and `loadError` names the error. With no earlier valid config, for example a broken file at start, `config` is the empty config, as now.
+
+- [ ] **Step 1: Write the failing tests:**
+  - `keeps the last valid config when the file gets an error` (yaml_config_file test). Write valid YAML and read it. Then write invalid YAML with a new modification time and read again. `config` equals the first config, and `loadError` is non-null.
+  - `uses the empty config when the file is broken from the start`.
+  - `clears the error when the file is valid again`.
+  - `keeps routing by the last valid subscription_accounts.yml after an edit breaks it` (proxy test). Start with the valid YAML and send a default-project request, which goes with `personal-token`. Overwrite the file with a route to an unknown account, and bump its modification time with `fs.utimesSync`. The next request still goes with `personal-token`, and `subscription-account-status` shows a non-empty `configErrors`.
+
+- [ ] **Step 2: Run** the two test files. Expected: FAIL.
+
+- [ ] **Step 3: Implement.** In `YamlConfigFile.read`, a failed parse sets `loadError` and keeps `loadedConfig` unchanged. Update the class comment to say this.
+
+- [ ] **Step 4: Run** `pnpm test` and the server typecheck. Expected: PASS.
+
+- [ ] **Step 5: Commit** `git commit -m "Keep the last valid configuration when a config file gets an error"`
+
 ### Task 8: Web UI accounts panel and Route column
 
 **Files:**
