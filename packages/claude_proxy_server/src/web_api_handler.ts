@@ -36,9 +36,9 @@ export interface SubscriptionAccountStatus {
     blockedRateLimitWindow: string | null;
     usageWindows: SubscriptionAccountUsageWindow[];
     usageCheckedAt: string | null;
+    /** The fraction of a 5-hour or weekly window at which the proxy avoids this account. 1 means no threshold. */
+    failoverUtilization: number;
   }[];
-  /** The fraction of a 5-hour or weekly window at which the proxy avoids an account. */
-  failoverUtilization: number;
   configErrors: string[];
 }
 
@@ -61,14 +61,14 @@ function buildSubscriptionAccountStatus(dependencies: WebApiHandlerDependencies)
         weeklyUtilization: usageWindows.find((usageWindow) => usageWindow.usageWindowName === '7d')?.utilization ?? null,
         isBlocked:
           wholeAccountBlock !== undefined ||
-          isSubscriptionAccountAboveFailoverUtilization(usageWindows, subscriptionAccountsConfig.failoverUtilization, new Date()),
+          isSubscriptionAccountAboveFailoverUtilization(usageWindows, subscriptionAccount.failoverUtilization, new Date()),
         blockedUntil: wholeAccountBlock?.blockedUntil ?? null,
         blockedRateLimitWindow: wholeAccountBlock?.rateLimitWindow ?? null,
         usageWindows,
         usageCheckedAt: checkedAt,
+        failoverUtilization: subscriptionAccount.failoverUtilization,
       };
     }),
-    failoverUtilization: subscriptionAccountsConfig.failoverUtilization,
     configErrors: dependencies.readConfigErrors(),
   };
 }

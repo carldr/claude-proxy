@@ -7,10 +7,13 @@ export interface PlannedSubscriptionAccountRoute {
   subscriptionAccountName: string;
   /** Null when the subscription account has no live grant. The request then goes upstream with Claude Code's own token. */
   accessToken: string | null;
+  /** True for the subscription account of the request's project. Its rejection goes to Claude Code when every route rejects. */
+  isProjectSubscriptionAccount: boolean;
 }
 
 /**
  * Returns true when the 5-hour or the weekly usage window is at or above the failover utilization.
+ * A failover utilization of 1 turns the check off, because a window at 1.00 can still take requests.
  * A window whose reset time has passed does not count, because its stored utilization is out of date.
  * The router and the subscription account status both use this rule.
  */
@@ -19,6 +22,7 @@ export function isSubscriptionAccountAboveFailoverUtilization(
   failoverUtilization: number,
   now: Date,
 ): boolean {
+  if (failoverUtilization >= 1) return false;
   const nowIsoString = now.toISOString();
   return usageWindows.some(
     (usageWindow) =>
@@ -49,41 +53,51 @@ export class SubscriptionAccountRouter {
 
   /**
    * Returns the routes to try in order. An empty plan means that the request goes upstream unchanged.
-   * The plan holds the project's own account, then each other account that is not blocked and has a live grant.
-   * A blocked own account goes last, so that every account blocked gives the project's own rejection.
-   * Failover never goes to another account without a live grant.
+   * In each group, the project's own account comes first, and the other accounts follow in file order:
+   * 1. the accounts that are not blocked;
+   * 2. the project's own account at its failover utilization, but only when group 1 is empty;
+   * 3. the accounts that a rejection blocks, because a block can end before its reset time.
+   * The plan omits any other account at its failover utilization, and any other account without a live grant.
    */
   async planRoutes(projectPath: string | null, model: string | null, now: Date): Promise<PlannedSubscriptionAccountRoute[]> {
     const config = this.readSubscriptionAccountsConfig();
     if (config.subscriptionAccounts.length === 0) return [];
 
-    const ownSubscriptionAccountName = findSubscriptionAccountNameForProject(config, projectPath);
+    const projectSubscriptionAccountName = findSubscriptionAccountNameForProject(config, projectPath);
     const activeLimitBlocks = this.subscriptionAccountStore.readActiveLimitBlocks(now);
-    const isBlocked = (subscriptionAccountName: string) =>
+    const isBlockedByRejection = (subscriptionAccountName: string) =>
       activeLimitBlocks.some(
         (limitBlock) =>
           limitBlock.subscriptionAccountName === subscriptionAccountName &&
           (limitBlock.blockedModel === '' || limitBlock.blockedModel === model),
-      ) ||
-      isSubscriptionAccountAboveFailoverUtilization(
-        this.subscriptionAccountStore.readUsageWindows(subscriptionAccountName).usageWindows,
-        config.failoverUtilization,
+      );
+    const projectSubscriptionAccountFirst = [
+      ...config.subscriptionAccounts.filter((subscriptionAccount) => subscriptionAccount.name === projectSubscriptionAccountName),
+      ...config.subscriptionAccounts.filter((subscriptionAccount) => subscriptionAccount.name !== projectSubscriptionAccountName),
+    ];
+
+    const unblockedRoutes: PlannedSubscriptionAccountRoute[] = [];
+    const rejectionBlockedRoutes: PlannedSubscriptionAccountRoute[] = [];
+    let projectRouteAtFailoverUtilization: PlannedSubscriptionAccountRoute | null = null;
+    for (const subscriptionAccount of projectSubscriptionAccountFirst) {
+      const isProjectSubscriptionAccount = subscriptionAccount.name === projectSubscriptionAccountName;
+      const isAtFailoverUtilization = isSubscriptionAccountAboveFailoverUtilization(
+        this.subscriptionAccountStore.readUsageWindows(subscriptionAccount.name).usageWindows,
+        subscriptionAccount.failoverUtilization,
         now,
       );
-
-    const plannedRoutes: PlannedSubscriptionAccountRoute[] = [];
-    for (const subscriptionAccount of config.subscriptionAccounts) {
-      if (subscriptionAccount.name === ownSubscriptionAccountName || isBlocked(subscriptionAccount.name)) continue;
+      if (isAtFailoverUtilization && !isProjectSubscriptionAccount) continue;
       const accessToken = await this.readLiveAccessToken(subscriptionAccount.name);
-      if (accessToken !== null) plannedRoutes.push({ subscriptionAccountName: subscriptionAccount.name, accessToken });
-    }
-    if (ownSubscriptionAccountName === null) return plannedRoutes;
+      if (accessToken === null && !isProjectSubscriptionAccount) continue;
 
-    const ownRoute = {
-      subscriptionAccountName: ownSubscriptionAccountName,
-      accessToken: await this.readLiveAccessToken(ownSubscriptionAccountName),
-    };
-    return isBlocked(ownSubscriptionAccountName) ? [...plannedRoutes, ownRoute] : [ownRoute, ...plannedRoutes];
+      const plannedRoute = { subscriptionAccountName: subscriptionAccount.name, accessToken, isProjectSubscriptionAccount };
+      if (isAtFailoverUtilization) projectRouteAtFailoverUtilization = plannedRoute;
+      else if (isBlockedByRejection(subscriptionAccount.name)) rejectionBlockedRoutes.push(plannedRoute);
+      else unblockedRoutes.push(plannedRoute);
+    }
+    const projectRoutesAtFailoverUtilization =
+      unblockedRoutes.length === 0 && projectRouteAtFailoverUtilization !== null ? [projectRouteAtFailoverUtilization] : [];
+    return [...unblockedRoutes, ...projectRoutesAtFailoverUtilization, ...rejectionBlockedRoutes];
   }
 
   /** Stores the usage windows of a response. A rejection blocks the account, or only the model for a model window. */
