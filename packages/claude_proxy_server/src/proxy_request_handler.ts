@@ -55,6 +55,11 @@ export async function handleProxyRequest(
 ): Promise<void> {
   const { requestDatabase, subscriptionAccountRouter } = dependencies;
   const startedAtMs = Date.now();
+  // The listener starts before the first await, so that a client that closes during planning also aborts the request.
+  const abortController = new AbortController();
+  clientResponse.on('close', () => {
+    if (!clientResponse.writableFinished) abortController.abort();
+  });
   const requestBody = await readIncomingBody(clientRequest);
   const requestUrl = new URL(clientRequest.url ?? '/', 'http://claude-proxy');
   const clientAuthKind = readClientAuthKind(clientRequest.headers);
@@ -90,11 +95,6 @@ export async function handleProxyRequest(
     plannedRoutes.length > 0
       ? plannedRoutes.map((plannedRoute) => ({ routeKind: 'subscription_account', plannedRoute }))
       : [clientAuthKind === 'oauth' ? { routeKind: 'subscription' } : { routeKind: 'passthrough' }];
-
-  const abortController = new AbortController();
-  clientResponse.on('close', () => {
-    if (!clientResponse.writableFinished) abortController.abort();
-  });
 
   for (const [targetIndex, upstreamTarget] of upstreamTargets.entries()) {
     const { routeKind, routeName } = describeUpstreamTarget(upstreamTarget);

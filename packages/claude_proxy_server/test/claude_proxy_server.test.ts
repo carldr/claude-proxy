@@ -593,6 +593,34 @@ describe('claude-proxy', () => {
     assert.deepEqual(readUpstreamSubscriptionAccountNames(), ['claude_code']);
   });
 
+  test('does not send a request upstream when the client closes it while the routes are planned', async () => {
+    await startProxy((_, upstreamResponse) => sendStreamingMessage(upstreamResponse, 'Hello'));
+    storeBothTestGrants();
+    const { subscriptionAccountRouter } = claudeProxyServer;
+    const planRoutes = subscriptionAccountRouter.planRoutes.bind(subscriptionAccountRouter);
+    const planningStarted = Promise.withResolvers<void>();
+    const planningGate = Promise.withResolvers<void>();
+    subscriptionAccountRouter.planRoutes = async (...planRoutesArguments) => {
+      planningStarted.resolve();
+      await planningGate.promise;
+      return planRoutes(...planRoutesArguments);
+    };
+    const clientAbortController = new AbortController();
+    const responsePromise = fetch(`${claudeProxyBaseUrl}/v1/messages?beta=true`, {
+      method: 'POST',
+      headers: { authorization: claudeCodeAuthorization, 'content-type': 'application/json' },
+      body: JSON.stringify(claudeCodeRequestBody),
+      signal: clientAbortController.signal,
+    });
+    await planningStarted.promise;
+    clientAbortController.abort();
+    await assert.rejects(responsePromise);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    planningGate.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.deepEqual(readUpstreamSubscriptionAccountNames(), []);
+  });
+
   test('forwards a request with Claude Code\'s own token when the project lookup throws', async () => {
     await startProxy((_, upstreamResponse) => sendStreamingMessage(upstreamResponse, 'Hello'));
     storeBothTestGrants();
