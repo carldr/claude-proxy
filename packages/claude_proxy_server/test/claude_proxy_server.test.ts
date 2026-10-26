@@ -431,13 +431,18 @@ describe('claude-proxy', () => {
   test('sends Claude Code\'s own token for an account without a grant, and never fails over to it', async () => {
     await startProxy((receivedRequest, upstreamResponse) => {
       if (receivedRequest.headers.authorization === workAuthorization) sendRateLimitRejection(upstreamResponse, 'Work', weeklyLimitRejectionHeaders);
-      else sendStreamingMessage(upstreamResponse, 'Hello');
+      else sendStreamingMessage(upstreamResponse, 'Hello', { 'anthropic-ratelimit-unified-7d-utilization': '0.5' });
     });
     storeTestGrant('Work', 'work-token');
 
     const defaultProjectResponse = await sendClaudeCodeRequest();
     await defaultProjectResponse.text();
-    assert.equal(defaultProjectResponse.headers.get('x-claude-proxy-route'), 'Personal');
+    assert.equal(defaultProjectResponse.headers.get('x-claude-proxy-route'), 'subscription');
+    const [defaultProjectRequestSummary] = await readApi('proxied-requests');
+    assert.equal(defaultProjectRequestSummary.route_kind, 'subscription');
+    assert.equal(defaultProjectRequestSummary.route_name, 'subscription');
+    // Claude Code's token can belong to another account, so its usage is not stored under Personal.
+    assert.deepEqual(claudeProxyServer.subscriptionAccountStore.readUsageWindows('Personal').usageWindows, []);
     const clientProjectResponse = await sendClaudeCodeRequest(buildClaudeCodeRequestBody(clientProjectPath));
     await clientProjectResponse.text();
     assert.equal(clientProjectResponse.status, 429);
@@ -459,13 +464,12 @@ describe('claude-proxy', () => {
     await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
     storeBothTestGrants();
     for (const requestPath of ['/v1/code/sessions/cse_1/worker/heartbeat', '/api/oauth/profile']) {
-      await (await fetch(`${claudeProxyBaseUrl}${requestPath}`, { method: 'POST', headers: { authorization: claudeCodeAuthorization } })).text();
+      const proxyResponse = await fetch(`${claudeProxyBaseUrl}${requestPath}`, { method: 'POST', headers: { authorization: claudeCodeAuthorization } });
+      await proxyResponse.text();
+      assert.equal(proxyResponse.headers.get('x-claude-proxy-route'), 'subscription', requestPath);
     }
     assert.deepEqual(receivedRequests.map((receivedRequest) => receivedRequest.path), ['/v1/code/sessions/cse_1/worker/heartbeat', '/api/oauth/profile']);
-    for (const receivedRequest of receivedRequests) {
-      assert.equal(receivedRequest.headers.authorization, claudeCodeAuthorization);
-      assert.equal(receivedRequest.headers['x-claude-proxy-route'], undefined);
-    }
+    for (const receivedRequest of receivedRequests) assert.equal(receivedRequest.headers.authorization, claudeCodeAuthorization);
   });
 
   test('rejects requests from web pages and requests addressed to another host name', async () => {

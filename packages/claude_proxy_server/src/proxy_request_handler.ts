@@ -142,9 +142,12 @@ export async function handleProxyRequest(
     let shouldTryNextTarget = false;
     if (upstreamTarget.routeKind === 'subscription_account') {
       const rateLimit = readSubscriptionRateLimit(statusCode, upstreamResponse.headers, new Date());
-      recordSafely(() =>
-        subscriptionAccountRouter.recordResponse(upstreamTarget.plannedRoute.subscriptionAccountName, requestContext.model, rateLimit),
-      );
+      // Claude Code's own token can belong to another account, so only a response to the account's grant updates its usage and blocks.
+      if (upstreamTarget.plannedRoute.accessToken !== null) {
+        recordSafely(() =>
+          subscriptionAccountRouter.recordResponse(upstreamTarget.plannedRoute.subscriptionAccountName, requestContext.model, rateLimit),
+        );
+      }
       shouldTryNextTarget = rateLimit.rejection !== null;
     }
 
@@ -260,10 +263,16 @@ function summariseForwardedResponse(
   };
 }
 
+/**
+ * Names the route in the request record and in the `x-claude-proxy-route` header.
+ * A subscription account without a live grant sends Claude Code's own token, so it counts as a `subscription` route.
+ */
 function describeUpstreamTarget(upstreamTarget: UpstreamTarget): { routeKind: RouteKind; routeName: string } {
   switch (upstreamTarget.routeKind) {
     case 'subscription_account':
-      return { routeKind: 'subscription_account', routeName: upstreamTarget.plannedRoute.subscriptionAccountName };
+      return upstreamTarget.plannedRoute.accessToken === null
+        ? { routeKind: 'subscription', routeName: 'subscription' }
+        : { routeKind: 'subscription_account', routeName: upstreamTarget.plannedRoute.subscriptionAccountName };
     case 'subscription':
       return { routeKind: 'subscription', routeName: 'subscription' };
     case 'passthrough':
