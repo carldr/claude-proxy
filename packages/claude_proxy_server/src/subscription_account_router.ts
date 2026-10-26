@@ -55,8 +55,8 @@ export class SubscriptionAccountRouter {
    * Returns the routes to try in order. An empty plan means that the request goes upstream unchanged.
    * In each group, the project's own account comes first, and the other accounts follow in file order:
    * 1. the accounts that are not blocked;
-   * 2. the project's own account at its failover utilization, but only when group 1 is empty;
-   * 3. the accounts that a rejection blocks, because a block can end before its reset time.
+   * 2. the accounts that a rejection blocks, because a block can end before its reset time;
+   * 3. the project's own account at its failover utilization, as the last resort.
    * The plan omits any other account at its failover utilization, and any other account without a live grant.
    */
   async planRoutes(projectPath: string | null, model: string | null, now: Date): Promise<PlannedSubscriptionAccountRoute[]> {
@@ -95,9 +95,8 @@ export class SubscriptionAccountRouter {
       else if (isBlockedByRejection(subscriptionAccount.name)) rejectionBlockedRoutes.push(plannedRoute);
       else unblockedRoutes.push(plannedRoute);
     }
-    const projectRoutesAtFailoverUtilization =
-      unblockedRoutes.length === 0 && projectRouteAtFailoverUtilization !== null ? [projectRouteAtFailoverUtilization] : [];
-    return [...unblockedRoutes, ...projectRoutesAtFailoverUtilization, ...rejectionBlockedRoutes];
+    const projectRoutesAtFailoverUtilization = projectRouteAtFailoverUtilization !== null ? [projectRouteAtFailoverUtilization] : [];
+    return [...unblockedRoutes, ...rejectionBlockedRoutes, ...projectRoutesAtFailoverUtilization];
   }
 
   /** Stores the usage windows of a response. A rejection blocks the account, or only the model for a model window. */
