@@ -20,7 +20,7 @@
 - OAuth client ID `9d1c250a-e61b-44d9-88ed-5944d1962f5e`. Authorize URL `https://claude.com/cai/oauth/authorize` with `code=true`. Token URL `https://platform.claude.com/v1/oauth/token`, JSON body. PKCE S256.
 - OAuth scopes, exactly: `org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload user:plugins`.
 - Login redirect URI: `http://localhost:<proxy port>/callback`. Claude Code uses `http://localhost:<random port>/callback`, so the server accepts any localhost port.
-- Default colours: Nettl `#a1c63d`, Personal `#ba8048`. A blocked account shows red `#e5484d`.
+- Default colours: Work `#a1c63d`, Personal `#ba8048`. A blocked account shows red `#e5484d`.
 - `requests.sqlite` holds real data: new tables use `CREATE TABLE IF NOT EXISTS`; existing tables do not change.
 - Usage polling interval: 5 minutes per account with a live grant.
 - Commit after each task. Stage files by name. Never push.
@@ -28,7 +28,7 @@
 ## Review Focus
 
 1. A refresh that two requests start at the same moment: the second must wait for the first and use its result. Two refresh calls spend the refresh token twice and kill the grant. Pinned by Task 3 "refreshes once when two requests need a new token at the same moment".
-2. A request without an environment block in a `pdc*` project: it must go to Nettl through the inherited project, not to the default account. Pinned by Task 5 "routes a request without an environment block by the project it inherits".
+2. A request without an environment block in a `client*` project: it must go to Work through the inherited project, not to the default account. Pinned by Task 5 "routes a request without an environment block by the project it inherits".
 3. A per-model rejection (Fable) on Personal: Opus requests from the same project must stay on Personal. Pinned by Task 5 "blocks only the rejected model on a per-model weekly rejection".
 4. A malformed `subscription_accounts.yml` (unknown account in a route, duplicate name): the proxy must keep running, report the error in the web UI, and send requests with Claude Code's own token. Pinned by Task 1 "rejects a route to an unknown account" and Task 5 "forwards requests unchanged while subscription_accounts.yml has an error".
 5. A login that returns an account already stored under the other name: refuse it, so one account cannot appear twice. Pinned by Task 7 "refuses a login whose account is stored under another name".
@@ -58,12 +58,12 @@
   ```
 
 - [ ] **Step 1: Write the failing tests** in `subscription_accounts_config.test.ts`:
-  - `parses accounts, routes and the default account, and expands ~`: parsing the spec's example YAML with `homeDirectory` `/Users/example_user` gives `projectRoutes[0].projectPathPattern === '/Users/example_user/Development/pdc*'`, two accounts with their colours, and `defaultSubscriptionAccountName === 'Personal'`.
-  - `matches a pattern and every subdirectory of a match`: `/Users/example_user/Development/pdc_flyerlink` and `/Users/example_user/Development/pdc_flyerlink/src/deep` give `'Nettl'`; `/Users/example_user/Development/nettl-dev` gives `'Nettl'`; `/Users/example_user/Development/nettl-dev-old` gives `'Personal'`.
-  - `uses the first matching route`: with routes `~/Development/*` → Personal before `~/Development/pdc*` → Nettl, `/Users/example_user/Development/pdc_x` gives `'Personal'`.
+  - `parses accounts, routes and the default account, and expands ~`: parsing the spec's example YAML with `homeDirectory` `/Users/example_user` gives `projectRoutes[0].projectPathPattern === '/Users/example_user/Development/client*'`, two accounts with their colours, and `defaultSubscriptionAccountName === 'Personal'`.
+  - `matches a pattern and every subdirectory of a match`: `/Users/example_user/Development/client_project` and `/Users/example_user/Development/client_project/src/deep` give `'Work'`; `/Users/example_user/Development/work-dev` gives `'Work'`; `/Users/example_user/Development/work-dev-old` gives `'Personal'`.
+  - `uses the first matching route`: with routes `~/Development/*` → Personal before `~/Development/client*` → Work, `/Users/example_user/Development/client_x` gives `'Personal'`.
   - `gives the default account to an unmatched project and to a request with no project`: `/tmp/other` and `null` give `'Personal'`.
   - `rejects a route to an unknown account`: throws `/project_routes\[0\]\.subscription_account "Nobody" is not in subscription_accounts/`.
-  - `rejects two accounts with one name`: throws `/two accounts named "Nettl"/`.
+  - `rejects two accounts with one name`: throws `/two accounts named "Work"/`.
   - `treats an empty file as no accounts`: `parseSubscriptionAccountsConfig(null, home)` deep-equals `emptySubscriptionAccountsConfig`.
 
 - [ ] **Step 2: Run** `node --test packages/claude_proxy_server/test/subscription_accounts_config.test.ts`. Expected: FAIL, the module does not exist.
@@ -247,18 +247,18 @@
   ```
   `createClaudeProxyServer` gets an option `oauthEndpoints: OAuthEndpoints` (main.ts passes `anthropicOAuthEndpoints`), and returns `subscriptionAccountStore` and `subscriptionAccountRouter` in place of `routingState`.
 
-- [ ] **Step 1: Rewrite the test harness.** `startProxy(respondAsAnthropic, subscriptionAccountsYaml)` writes `subscription_accounts.yml`, and starts one fake upstream named `anthropic` plus a fake token server. A helper `storeTestGrant(subscriptionAccountName, accessToken)` writes a grant that expires in 8 hours. The upstream responder tells accounts apart by `headers.authorization`: `Bearer nettl-token`, `Bearer personal-token`, or Claude Code's `Bearer sk-ant-oat-test`. Delete the API-key and routing-mode tests: `moves to the API key…`, `keeps the subscription at 100%…`, `does not switch on a 429 for the five-hour window…`, `tries the next API key on a 401…`, `starts with the selected API key…`.
+- [ ] **Step 1: Rewrite the test harness.** `startProxy(respondAsAnthropic, subscriptionAccountsYaml)` writes `subscription_accounts.yml`, and starts one fake upstream named `anthropic` plus a fake token server. A helper `storeTestGrant(subscriptionAccountName, accessToken)` writes a grant that expires in 8 hours. The upstream responder tells accounts apart by `headers.authorization`: `Bearer work-token`, `Bearer personal-token`, or Claude Code's `Bearer sk-ant-oat-test`. Delete the API-key and routing-mode tests: `moves to the API key…`, `keeps the subscription at 100%…`, `does not switch on a 429 for the five-hour window…`, `tries the next API key on a 401…`, `starts with the selected API key…`.
 
-- [ ] **Step 2: Write the failing tests** in `claude_proxy_server.test.ts`. The YAML routes `/Users/example_user/Development/pdc*` to Nettl, with Personal as the default.
+- [ ] **Step 2: Write the failing tests** in `claude_proxy_server.test.ts`. The YAML routes `/Users/example_user/Development/client*` to Work, with Personal as the default.
   - `sends a project's requests with its account's grant and records the account`: a request with the default body (project `/Users/example_user/Development/example_project`) reaches upstream with `Bearer personal-token`. `x-claude-proxy-route` is `Personal`, and the recorded `route_kind` is `subscription_account`.
-  - `routes a pdc project to Nettl`: a body whose environment block names `/Users/example_user/Development/pdc_flyerlink` reaches upstream with `Bearer nettl-token`.
-  - `routes a request without an environment block by the project it inherits`: a `pdc_flyerlink` request answered with a `request-id: req_1` header, then a request with no environment block and `cc_prev_req=req_1` in `system`, go out with `nettl-token` both times.
-  - `fails over on a weekly rejection and stays on the other account until the reset`: Personal answers 429 with weekly rejection headers. The client gets 200 from Nettl, and two attempts are recorded. The next request goes straight to Nettl.
-  - `fails over on a five-hour rejection, in the other direction`: a `pdc` request, with Nettl answering a `five_hour` rejection, is answered by Personal.
+  - `routes a client project to Work`: a body whose environment block names `/Users/example_user/Development/client_project` reaches upstream with `Bearer work-token`.
+  - `routes a request without an environment block by the project it inherits`: a `client_project` request answered with a `request-id: req_1` header, then a request with no environment block and `cc_prev_req=req_1` in `system`, go out with `work-token` both times.
+  - `fails over on a weekly rejection and stays on the other account until the reset`: Personal answers 429 with weekly rejection headers. The client gets 200 from Work, and two attempts are recorded. The next request goes straight to Work.
+  - `fails over on a five-hour rejection, in the other direction`: a `client` request, with Work answering a `five_hour` rejection, is answered by Personal.
   - `blocks only the rejected model on a per-model weekly rejection`: Personal rejects `claude-fable-5-1` with claim `seven_day_fable`. Then a `claude-opus-5-5` request from the same project goes to Personal first.
   - `returns the project's own rejection when every account is blocked`: both accounts reject. The first request gets the rejection of the account tried last, and both are recorded as attempts. A second request is planned as `[Personal]` only, and gets Personal's 429.
   - `forwards a 401, a 529 and a network error without failover`: each reaches the client with one attempt recorded.
-  - `sends Claude Code's own token for an account without a grant, and never fails over to it`: no grant for Personal. A default-project request reaches upstream with `Bearer sk-ant-oat-test`, and a Nettl rejection does not move to Personal.
+  - `sends Claude Code's own token for an account without a grant, and never fails over to it`: no grant for Personal. A default-project request reaches upstream with `Bearer sk-ant-oat-test`, and a Work rejection does not move to Personal.
   - `forwards requests unchanged while subscription_accounts.yml has an error`: an unknown account in a route gives Claude Code's own token upstream, and `configErrors` is non-empty.
   - `leaves every non-message path untouched`: `/v1/code/sessions/cse_1/worker/heartbeat` and `/api/oauth/profile` reach upstream with Claude Code's own `authorization`, and with no `x-claude-proxy-route` header.
   - Keep the passing tests for recording, inheritance, cost totals, local-request checks, unrecorded paths and `x-api-key` passthrough, adapted to the new harness.
@@ -327,7 +327,7 @@
 
 - [ ] **Step 1: Write the failing tests:**
   - `parses five_hour, seven_day and per-model windows from the usage report`: `{ five_hour: { utilization: 9, resets_at }, seven_day: { utilization: 93, resets_at }, limits: [{ scope: { model: { display_name: 'Fable' } }, percent: 59, resets_at }] }` gives `5h 0.09`, `7d 0.93` and `Fable 0.59`.
-  - `polls each logged-in account with its own grant`: the fake upstream receives `GET /api/oauth/usage` once with `nettl-token` and once with `personal-token`. The status endpoint then shows both accounts' `weeklyUtilization`.
+  - `polls each logged-in account with its own grant`: the fake upstream receives `GET /api/oauth/usage` once with `work-token` and once with `personal-token`. The status endpoint then shows both accounts' `weeklyUtilization`.
   - `clears a whole-account block when the usage poll shows room again`: a stored weekly block for Personal, plus a poll that reports `seven_day.utilization: 40`, gives `isBlocked: false`.
   - `reports login_required for an account without a grant or with a rejected refresh token`.
   - `updates usage from the headers of every routed response`: after one Personal response with `7d-utilization 0.5`, the status shows `weeklyUtilization: 0.5`.
@@ -355,7 +355,7 @@
 
 - [ ] **Step 1: Write the failing tests:**
   - `logs in an account through the loopback callback`: POST login for `Personal`, then GET `/callback` with the URL's `state` and a code. The fake token server answers with an identity. `readGrant('Personal')` then holds the tokens, and the status shows `loginState: 'logged_in'` with the email.
-  - `refuses a login whose account is stored under another name`: Nettl's grant has `accountUuid` A. A Personal login whose token response has `account.uuid` A answers 400 with `/already logged in as Nettl/`, and stores nothing.
+  - `refuses a login whose account is stored under another name`: Work's grant has `accountUuid` A. A Personal login whose token response has `account.uuid` A answers 400 with `/already logged in as Work/`, and stores nothing.
   - `rejects a callback with an unknown state`: answers 400, and nothing is stored.
   - `rejects a login for an account that is not in subscription_accounts.yml`: the POST answers 400.
 
@@ -408,7 +408,7 @@
 
 - [ ] **Step 2: Replace `makeRouteDotImage`** with `makeSubscriptionAccountPiesImage(subscriptionAccounts:) -> NSImage`. It draws one 16-point circle per account, 4 points apart, as a non-template image. Each circle has a faint fill of the account colour at 25% alpha, a pie wedge from 12 o'clock clockwise for `weeklyUtilization`, and a 1-point dark outline. A blocked account draws its wedge and faint fill in red `#e5484d`. An account that requires login draws an empty grey circle. When the proxy does not answer, keep the grey "!" dot.
 
-- [ ] **Step 3: Replace the menu text.** Show one line per account: "Nettl: 93% weekly", "Personal: blocked until Tue 14:00", or "Personal: log in from the web UI". Remove the routing mode line.
+- [ ] **Step 3: Replace the menu text.** Show one line per account: "Work: 93% weekly", "Personal: blocked until Tue 14:00", or "Personal: log in from the web UI". Remove the routing mode line.
 
 - [ ] **Step 4: Run** `sh macos/claude_proxy_menu_bar/build_claude_proxy_menu_bar.sh`. Expected: the build succeeds.
 
@@ -433,8 +433,8 @@
 
 - [ ] **Step 3: Commit** `git commit -m "Describe subscription account routing in the README and CLAUDE.md"`
 
-- [ ] **Step 4: Hand over to Carl for the end-to-end check.** These steps need his browser logins and his second subscription:
+- [ ] **Step 4: Hand over to the user for the end-to-end check.** These steps need the user's browser logins and second subscription:
   1. Run `launchctl kickstart -k gui/$(id -u)/local.claude-proxy.server`, and open `http://127.0.0.1:4100/_proxy/`.
-  2. Log in to Nettl, then Personal, each in a browser signed in to that account.
-  3. Run `claude` in `~/Development/pdc_flyerlink` and in this repository, and check the Route column shows Nettl and Personal.
-  4. Start Remote Control from the Personal project, and check that the session opens on the phone under Nettl.
+  2. Log in to Work, then Personal, each in a browser signed in to that account.
+  3. Run `claude` in `~/Development/client_project` and in this repository, and check the Route column shows Work and Personal.
+  4. Start Remote Control from the Personal project, and check that the session opens on the phone under Work.

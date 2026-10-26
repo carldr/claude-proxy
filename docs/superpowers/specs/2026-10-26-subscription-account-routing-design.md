@@ -2,22 +2,22 @@
 
 ## Intent
 
-Carl has two Claude subscriptions:
+The user has two Claude subscriptions:
 
-- **Nettl**, paid for by a client. Claude Code is logged in to this account. Its login email is `carl@29degrees.co.uk`, so do not name it after the email.
-- **Personal**, paid for by Carl's own company 29degrees. Carl subscribes to it once this design is approved.
+- **Work**, paid for by a client. Claude Code is logged in to this account.
+- **Personal**, paid for by the user's own company. The user subscribes to it once this design is approved.
 
-Today Carl does all his work on Nettl, and he hits the weekly limit again and again. With the work split by project, he expects to hit neither limit. When one account does hit a limit, its projects move to the other account without interruption.
+Today the user does all their work on Work, and hits the weekly limit again and again. With the work split by project, the user expects to hit neither limit. When one account does hit a limit, its projects move to the other account without interruption.
 
 The proxy already fails over from the subscription to API keys. That failover goes away. Anthropic's monthly API credits do not apply to Claude Code, so the API keys are of no use.
 
-Both accounts are individual Max plans, with different emails. Extra usage (overage) is off on both. If Carl turns overage on later, an account that uses overage does not fail over. Overage only matters because with it on, an account no longer rejects at its limit.
+Both accounts are on the same plan tier, with different emails. Extra usage (overage) is off on both. If the user turns overage on later, an account that uses overage does not fail over. Overage only matters because with it on, an account no longer rejects at its limit.
 
 ## Goals
 
 1. Send each Claude Code request to the account that owns its project, chosen by glob patterns on the project directory.
 2. Fail over to the other account when an account rejects a request for its 5-hour or weekly limit. Do this before any byte reaches Claude Code, so Claude Code sees a normal response.
-3. Keep Remote Control, `/usage`, telemetry and every other non-message call on the account that Claude Code is logged in to. Carl wants all Remote Control sessions under one account on his phone.
+3. Keep Remote Control, `/usage`, telemetry and every other non-message call on the account that Claude Code is logged in to. The user wants all Remote Control sessions under one account on the user's phone.
 4. Show each account's usage at a glance in the menu bar, and in detail in the web UI.
 
 ## Non-goals
@@ -39,7 +39,7 @@ These questions were settled before the design:
 | Question | Answer | Evidence |
 | --- | --- | --- |
 | Does the server reject a `metadata.user_id` whose `account_uuid` does not match the token? | No. | Tested on 2026-10-26: a random `account_uuid` returned 200, and the usage counted against the token's account. |
-| Does a login by the proxy give a grant that is independent of Claude Code's grant? | Yes. | Carl logs in on several machines at once. claude-swap issue #107 runs the same PKCE flow for each account it adds. |
+| Does a login by the proxy give a grant that is independent of Claude Code's grant? | Yes. | The user logs in on several machines at once. claude-swap issue #107 runs the same PKCE flow for each account it adds. |
 | Does Remote Control work when messages use a different account's token? | Yes. | claude-swap issue #198 measured the reverse split: Remote Control on one account and inference on another, in one session. |
 
 The spike scripts are in the scratchpad, not in the repository. The OAuth constants below come from the Claude Code 2.1.310 binary.
@@ -48,7 +48,7 @@ The spike scripts are in the scratchpad, not in the repository. The OAuth consta
 
 ### Accounts and grants
 
-- The proxy runs its own browser OAuth login for every account, Nettl included. Each login gives the proxy a grant of its own, independent of Claude Code's grant.
+- The proxy runs its own browser OAuth login for every account, Work included. Each login gives the proxy a grant of its own, independent of Claude Code's grant.
 - The proxy sends every routed `/v1/messages*` request with its own access token for the chosen account. It also polls usage with these grants. It never needs to know which account Claude Code is logged in to.
 - The OAuth flow is PKCE with S256, using Claude Code's client:
 
@@ -65,19 +65,19 @@ The spike scripts are in the scratchpad, not in the repository. The OAuth consta
 
 ### Configuration file
 
-`~/.claude-proxy/subscription_accounts.yml` replaces `routes.yml`. Carl edits it by hand. The web UI does not edit it.
+`~/.claude-proxy/subscription_accounts.yml` replaces `routes.yml`. The user edits it by hand. The web UI does not edit it.
 
 ```yaml
 subscription_accounts:
-  - name: Nettl
+  - name: Work
     colour: "#a1c63d"
   - name: Personal
     colour: "#ba8048"
 project_routes:
-  - project_path_pattern: ~/Development/pdc*
-    subscription_account: Nettl
-  - project_path_pattern: ~/Development/nettl-dev
-    subscription_account: Nettl
+  - project_path_pattern: ~/Development/client*
+    subscription_account: Work
+  - project_path_pattern: ~/Development/work-dev
+    subscription_account: Work
 default_subscription_account: Personal
 ```
 
@@ -111,7 +111,7 @@ default_subscription_account: Personal
 
 - One pie per account, in file order, filled in the account's colour. The pie shows the account's weekly (7d) usage. There are no letters.
 - The pie turns red when the account is blocked by its weekly limit, so it is full and red. The pie also turns red when the account's 5-hour limit blocks the account. Then the pie keeps showing the weekly percentage.
-- Two red pies tell Carl that neither account can take requests.
+- Two red pies tell the user that neither account can take requests.
 - When the proxy does not answer, the menu bar keeps today's grey "!" dot.
 - The app keeps its refresh timing: once a minute, and every 5 seconds while the proxy does not answer.
 
@@ -134,7 +134,7 @@ default_subscription_account: Personal
 
 ## Left to the builder
 
-- **Login callback.** Prefer a loopback callback, `http://localhost:4100/callback` or the proxy's own path, if the authorization server accepts it. Claude Code itself uses `http://localhost:<random port>/callback`. Otherwise, use the manual redirect and a field in the web UI where Carl pastes the `code#state` string.
+- **Login callback.** Prefer a loopback callback, `http://localhost:4100/callback` or the proxy's own path, if the authorization server accepts it. Claude Code itself uses `http://localhost:<random port>/callback`. Otherwise, use the manual redirect and a field in the web UI where the user pastes the `code#state` string.
 - **Account identity.** After login, read the account email and UUID from the token response (`account`, `organization`) or from `/api/oauth/profile`. *Claude's call:* the identity of an account is the pair of account UUID and organisation UUID, because one email can belong to several organisations. Refuse a login whose pair is already stored under another name.
 - **Refresh timing.** Refresh shortly before `expiresAt`. Allow one refresh at a time per account. On `invalid_grant`, mark the grant dead and show "Log in" again. A transient failure keeps the grant.
 - **An account without a live grant.** Its requests go upstream with Claude Code's own token, unchanged, and the web UI shows that the account needs a login.
