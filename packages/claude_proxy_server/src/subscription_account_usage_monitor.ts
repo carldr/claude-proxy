@@ -91,7 +91,7 @@ export class SubscriptionAccountUsageMonitor {
     return usageCheckErrors;
   }
 
-  private async checkSubscriptionAccountUsage(subscriptionAccountName: string): Promise<void> {
+  async checkSubscriptionAccountUsage(subscriptionAccountName: string): Promise<void> {
     const accessToken = await this.grantRefresher.readAccessToken(subscriptionAccountName);
     if (accessToken === null) return;
     const usageResponse = await fetch(`${this.anthropicBaseUrl}/api/oauth/usage`, {
