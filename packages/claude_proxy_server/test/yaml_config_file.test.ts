@@ -67,3 +67,17 @@ test('clears the error when the file is valid again', () => {
   assert.deepEqual(config, { value: 'second' });
   assert.equal(loadError, null);
 });
+
+test('keeps the last valid config when the file disappears', () => {
+  const yamlConfigFile = new YamlConfigFile(configFilePath, parseExampleConfig, emptyExampleConfig);
+  writeConfigFile('value: first\n');
+  yamlConfigFile.read();
+  fs.rmSync(configFilePath);
+  const missingRead = yamlConfigFile.read();
+  assert.deepEqual(missingRead.config, { value: 'first' });
+  assert.notEqual(missingRead.loadError, null);
+  writeConfigFile('value: second\n');
+  const rewrittenRead = yamlConfigFile.read();
+  assert.deepEqual(rewrittenRead.config, { value: 'second' });
+  assert.equal(rewrittenRead.loadError, null);
+});
