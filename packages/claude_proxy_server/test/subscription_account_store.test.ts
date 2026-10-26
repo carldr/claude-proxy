@@ -71,7 +71,7 @@ test('merges usage windows by name', () => {
   });
 });
 
-test('expires limit blocks at blockedUntil', () => {
+test('expires limit blocks at blockedUntil, and does not write to the database when it reads them', () => {
   withStore((store) => {
     const now = new Date('2026-10-26T10:00:00Z');
     const limitBlock = {
@@ -83,7 +83,22 @@ test('expires limit blocks at blockedUntil', () => {
     store.writeLimitBlock(limitBlock);
     assert.deepEqual(store.readActiveLimitBlocks(now), [limitBlock]);
     assert.deepEqual(store.readActiveLimitBlocks(new Date(now.getTime() + 7_200_000)), []);
-    assert.deepEqual(store.readActiveLimitBlocks(now), []);
+    assert.deepEqual(store.readActiveLimitBlocks(now), [limitBlock]);
+  });
+});
+
+test('deletes expired limit blocks when it writes a limit block', () => {
+  withStore((store) => {
+    const expiredBlock = { subscriptionAccountName: 'Personal', blockedModel: '', rateLimitWindow: 'five_hour', blockedUntil: '2020-01-01T00:00:00.000Z' };
+    const activeBlock = {
+      subscriptionAccountName: 'Work',
+      blockedModel: '',
+      rateLimitWindow: 'seven_day',
+      blockedUntil: new Date(Date.now() + 3_600_000).toISOString(),
+    };
+    store.writeLimitBlock(expiredBlock);
+    store.writeLimitBlock(activeBlock);
+    assert.deepEqual(store.readActiveLimitBlocks(new Date('2019-01-01T00:00:00Z')), [activeBlock]);
   });
 });
 
