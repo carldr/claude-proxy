@@ -3,17 +3,12 @@ import os from 'node:os';
 import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ProxiedRequestFilters, RequestDatabase } from './request_database.ts';
-import type { RoutingMode, RoutingState } from './routing_state.ts';
-import { readIncomingBody } from './upstream_http_request.ts';
 
 export const webApiPathPrefix = '/_proxy/api/';
 
 export interface WebApiHandlerDependencies {
   requestDatabase: RequestDatabase;
-  routingState: RoutingState;
   readConfigErrors: () => string[];
-  /** Returns an error message, or null on success. */
-  checkSubscriptionUsage: () => Promise<string | null>;
   claudeCodeProjectsDirectory: string;
 }
 
@@ -27,7 +22,7 @@ export async function handleWebApiRequest(
   const apiPath = requestUrl.pathname.slice(webApiPathPrefix.length);
   const queryParameters = requestUrl.searchParams;
   const readQueryParameter = (parameterName: string) => queryParameters.get(parameterName) || undefined;
-  const { requestDatabase, routingState } = dependencies;
+  const { requestDatabase } = dependencies;
   const readProxiedRequestFilters = (): ProxiedRequestFilters => ({
     startedFrom: readQueryParameter('startedFrom'),
     startedTo: readQueryParameter('startedTo'),
@@ -40,31 +35,6 @@ export async function handleWebApiRequest(
   });
 
   try {
-    if (clientRequest.method === 'GET' && apiPath === 'routing-status') {
-      return sendJson(clientResponse, 200, { ...routingState.readRoutingStatus(), configErrors: dependencies.readConfigErrors() });
-    }
-
-    if (clientRequest.method === 'PUT' && apiPath === 'routing-settings') {
-      const routingSettings = JSON.parse((await readIncomingBody(clientRequest)).toString('utf8')) as {
-        routingMode?: RoutingMode;
-        selectedApiKeyRouteName?: string;
-      };
-      if (routingSettings.routingMode !== undefined) routingState.setRoutingMode(routingSettings.routingMode);
-      if (routingSettings.selectedApiKeyRouteName !== undefined) {
-        routingState.setSelectedApiKeyRouteName(routingSettings.selectedApiKeyRouteName);
-      }
-      return sendJson(clientResponse, 200, { ...routingState.readRoutingStatus(), configErrors: dependencies.readConfigErrors() });
-    }
-
-    if (clientRequest.method === 'POST' && apiPath === 'subscription-usage-check') {
-      const checkError = await dependencies.checkSubscriptionUsage();
-      return sendJson(clientResponse, checkError === null ? 200 : 502, {
-        ...routingState.readRoutingStatus(),
-        configErrors: dependencies.readConfigErrors(),
-        subscriptionUsageCheckError: checkError,
-      });
-    }
-
     if (clientRequest.method === 'GET' && apiPath === 'proxied-requests') {
       return sendJson(
         clientResponse,

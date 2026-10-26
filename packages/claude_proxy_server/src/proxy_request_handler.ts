@@ -6,7 +6,6 @@ import {
   readAssembledMessageToolText,
   type AssembledMessage,
 } from './anthropic_message_stream_assembler.ts';
-import { subscriptionRouteName } from './api_key_routes_config.ts';
 import { extractClaudeCodeRequestContext } from './claude_code_request_context.ts';
 import {
   estimateMessageCostUsd,
@@ -15,20 +14,21 @@ import {
   type ModelPricingTable,
 } from './model_pricing_config.ts';
 import type { ClientAuthKind, CompletedProxiedRequest, RequestDatabase, RouteKind } from './request_database.ts';
-import type { RoutingState, UpstreamRoute } from './routing_state.ts';
-import { readSubscriptionWeeklyRateLimit } from './subscription_rate_limit_headers.ts';
+import type { PlannedSubscriptionAccountRoute, SubscriptionAccountRouter } from './subscription_account_router.ts';
+import { readSubscriptionRateLimit } from './subscription_rate_limit_headers.ts';
 import { readIncomingBody, sendUpstreamHttpRequest } from './upstream_http_request.ts';
 
-type UpstreamTarget = UpstreamRoute | { routeKind: 'passthrough' };
+type UpstreamTarget =
+  | { routeKind: 'subscription_account'; plannedRoute: PlannedSubscriptionAccountRoute }
+  | { routeKind: 'subscription' }
+  | { routeKind: 'passthrough' };
 
 export interface ProxyRequestHandlerDependencies {
   requestDatabase: RequestDatabase;
-  routingState: RoutingState;
+  subscriptionAccountRouter: SubscriptionAccountRouter;
   readModelPricingTable: () => ModelPricingTable;
-  /** The Anthropic API base URL for subscription and passthrough traffic, normally https://api.anthropic.com. */
+  /** The Anthropic API base URL, normally https://api.anthropic.com. */
   anthropicBaseUrl: string;
-  /** Receives each OAuth access token that Claude Code sends, for the subscription usage check. */
-  rememberSubscriptionAccessToken: (accessToken: string) => void;
 }
 
 const requestHeadersNotForwarded = new Set([
@@ -44,8 +44,8 @@ const responseHeadersNotForwarded =new Set(['connection', 'keep-alive', 'transfe
 
 /**
  * Forwards one client request to Anthropic and records it.
- * Subscription (OAuth) requests to `/v1/messages` follow the routing plan: the proxy moves to the next route
- * when the subscription rejects a request for the weekly limit, or when an API key returns 401.
+ * Subscription (OAuth) requests to `/v1/messages` follow the plan of `SubscriptionAccountRouter`. The proxy moves to the
+ * next subscription account when an account rejects the request for a 5-hour, weekly or per-model weekly limit.
  * The proxy can retry only before it sends anything to the client, and failover responses are never streamed.
  */
 export async function handleProxyRequest(
@@ -53,16 +53,18 @@ export async function handleProxyRequest(
   clientResponse: ServerResponse,
   dependencies: ProxyRequestHandlerDependencies,
 ): Promise<void> {
-  const { requestDatabase, routingState } = dependencies;
+  const { requestDatabase, subscriptionAccountRouter } = dependencies;
   const startedAtMs = Date.now();
   const requestBody = await readIncomingBody(clientRequest);
   const requestUrl = new URL(clientRequest.url ?? '/', 'http://claude-proxy');
   const clientAuthKind = readClientAuthKind(clientRequest.headers);
 
-  const bearerToken = /^Bearer\s+(.+)$/i.exec(clientRequest.headers.authorization ?? '')?.[1];
-  if (bearerToken) dependencies.rememberSubscriptionAccessToken(bearerToken);
-
   const requestContext = extractClaudeCodeRequestContext(clientRequest.headers, parseJsonOrNull(requestBody.toString('utf8')));
+  const isSubscriptionAccountRoutedRequest = clientAuthKind === 'oauth' && requestUrl.pathname.startsWith('/v1/messages');
+  // A request without an environment block takes its project from the conversation, so it goes to the same account.
+  const projectPath = isSubscriptionAccountRoutedRequest
+    ? requestDatabase.findProjectPath(requestContext.sessionId, requestContext.projectPath, requestContext.previousUpstreamRequestId).projectPath
+    : null;
   const proxiedRequestId = !recordedRequestPaths.has(requestUrl.pathname) ? null : recordSafely(() =>
     requestDatabase.insertStartedRequest({
       startedAt: new Date(startedAtMs).toISOString(),
@@ -84,10 +86,13 @@ export async function handleProxyRequest(
     if (proxiedRequestId !== null) recordSafely(() => requestDatabase.completeRequest(proxiedRequestId, completedRequest));
   };
 
-  const isSwitchableSubscriptionRequest = clientAuthKind === 'oauth' && requestUrl.pathname.startsWith('/v1/messages');
-  const upstreamTargets: UpstreamTarget[] = isSwitchableSubscriptionRequest
-    ? routingState.planUpstreamRoutes()
-    : [clientAuthKind === 'oauth' ? { routeKind: 'subscription' } : { routeKind: 'passthrough' }];
+  const plannedRoutes = isSubscriptionAccountRoutedRequest
+    ? await subscriptionAccountRouter.planRoutes(projectPath, requestContext.model, new Date())
+    : [];
+  const upstreamTargets: UpstreamTarget[] =
+    plannedRoutes.length > 0
+      ? plannedRoutes.map((plannedRoute) => ({ routeKind: 'subscription_account', plannedRoute }))
+      : [clientAuthKind === 'oauth' ? { routeKind: 'subscription' } : { routeKind: 'passthrough' }];
 
   const abortController = new AbortController();
   clientResponse.on('close', () => {
@@ -95,8 +100,8 @@ export async function handleProxyRequest(
   });
 
   for (const [targetIndex, upstreamTarget] of upstreamTargets.entries()) {
-    const { routeKind, routeName, baseUrl } = describeUpstreamTarget(upstreamTarget, dependencies.anthropicBaseUrl);
-    const upstreamUrl = new URL(`${baseUrl}${requestUrl.pathname}${requestUrl.search}`);
+    const { routeKind, routeName } = describeUpstreamTarget(upstreamTarget);
+    const upstreamUrl = new URL(`${dependencies.anthropicBaseUrl}${requestUrl.pathname}${requestUrl.search}`);
     const attemptStartedAtMs = Date.now();
     const recordAttempt = (statusCode: number | null, errorBody: string | null) => {
       if (proxiedRequestId === null) return;
@@ -135,12 +140,12 @@ export async function handleProxyRequest(
 
     const statusCode = upstreamResponse.statusCode ?? 502;
     let shouldTryNextTarget = false;
-    if (upstreamTarget.routeKind === 'subscription') {
-      const weeklyRateLimit = readSubscriptionWeeklyRateLimit(statusCode, upstreamResponse.headers);
-      recordSafely(() => routingState.recordSubscriptionWeeklyRateLimit(weeklyRateLimit));
-      shouldTryNextTarget = weeklyRateLimit.isWeeklyLimitRejection;
-    } else if (upstreamTarget.routeKind === 'api_key') {
-      shouldTryNextTarget = statusCode === 401;
+    if (upstreamTarget.routeKind === 'subscription_account') {
+      const rateLimit = readSubscriptionRateLimit(statusCode, upstreamResponse.headers, new Date());
+      recordSafely(() =>
+        subscriptionAccountRouter.recordResponse(upstreamTarget.plannedRoute.subscriptionAccountName, requestContext.model, rateLimit),
+      );
+      shouldTryNextTarget = rateLimit.rejection !== null;
     }
 
     if (shouldTryNextTarget && targetIndex < upstreamTargets.length - 1) {
@@ -255,23 +260,20 @@ function summariseForwardedResponse(
   };
 }
 
-function describeUpstreamTarget(
-  upstreamTarget: UpstreamTarget,
-  anthropicBaseUrl: string,
-): { routeKind: RouteKind; routeName: string; baseUrl: string } {
+function describeUpstreamTarget(upstreamTarget: UpstreamTarget): { routeKind: RouteKind; routeName: string } {
   switch (upstreamTarget.routeKind) {
+    case 'subscription_account':
+      return { routeKind: 'subscription_account', routeName: upstreamTarget.plannedRoute.subscriptionAccountName };
     case 'subscription':
-      return { routeKind: 'subscription', routeName: subscriptionRouteName, baseUrl: anthropicBaseUrl };
+      return { routeKind: 'subscription', routeName: 'subscription' };
     case 'passthrough':
-      return { routeKind: 'passthrough', routeName: 'passthrough', baseUrl: anthropicBaseUrl };
-    case 'api_key':
-      return { routeKind: 'api_key', routeName: upstreamTarget.apiKeyRoute.name, baseUrl: upstreamTarget.apiKeyRoute.baseUrl };
+      return { routeKind: 'passthrough', routeName: 'passthrough' };
   }
 }
 
 /**
- * Copies the client headers. For an API key route it replaces the OAuth token with the route's API key
- * and removes the OAuth beta flag, which the API rejects with an API key.
+ * Copies the client headers. For a subscription account with a live grant, it replaces Claude Code's
+ * OAuth token with the access token of that grant.
  */
 function buildUpstreamHeaders(clientHeaders: IncomingHttpHeaders, upstreamTarget: UpstreamTarget, requestBody: Buffer): OutgoingHttpHeaders {
   const upstreamHeaders: OutgoingHttpHeaders = {};
@@ -280,15 +282,8 @@ function buildUpstreamHeaders(clientHeaders: IncomingHttpHeaders, upstreamTarget
   }
   if (requestBody.length > 0) upstreamHeaders['content-length'] = requestBody.length;
 
-  if (upstreamTarget.routeKind === 'api_key') {
-    delete upstreamHeaders.authorization;
-    upstreamHeaders['x-api-key'] = upstreamTarget.apiKeyRoute.apiKey;
-    const betaFlags = String(clientHeaders['anthropic-beta'] ?? '')
-      .split(',')
-      .map((betaFlag) => betaFlag.trim())
-      .filter((betaFlag) => betaFlag !== '' && !betaFlag.startsWith('oauth-'));
-    if (betaFlags.length > 0) upstreamHeaders['anthropic-beta'] = betaFlags.join(',');
-    else delete upstreamHeaders['anthropic-beta'];
+  if (upstreamTarget.routeKind === 'subscription_account' && upstreamTarget.plannedRoute.accessToken !== null) {
+    upstreamHeaders.authorization = `Bearer ${upstreamTarget.plannedRoute.accessToken}`;
   }
   return upstreamHeaders;
 }
