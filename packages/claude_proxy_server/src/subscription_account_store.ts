@@ -172,8 +172,12 @@ export class SubscriptionAccountStore {
     }
   }
 
-  /** Keeps an active block that ends later, so a 5-hour block cannot shorten a weekly block of the same scope. */
+  /**
+   * Keeps an active block that ends later, so a 5-hour block cannot shorten a weekly block of the same scope.
+   * Deletes the expired blocks of every subscription account first, so that reads need not write.
+   */
   writeLimitBlock(limitBlock: SubscriptionAccountLimitBlock): void {
+    this.database.prepare('DELETE FROM subscription_account_limit_blocks WHERE blocked_until <= ?').run(new Date().toISOString());
     const existingBlock = this.database
       .prepare('SELECT blocked_until FROM subscription_account_limit_blocks WHERE subscription_account_name = ? AND blocked_model = ?')
       .get(limitBlock.subscriptionAccountName, limitBlock.blockedModel) as { blocked_until: string } | undefined;
@@ -187,15 +191,14 @@ export class SubscriptionAccountStore {
       .run(limitBlock.subscriptionAccountName, limitBlock.blockedModel, limitBlock.rateLimitWindow, limitBlock.blockedUntil);
   }
 
-  /** Deletes blocks whose blockedUntil has passed, then returns the rest. */
+  /** Returns the blocks whose blockedUntil is after `now`. It does not write, so a busy database cannot make it wait for a lock. */
   readActiveLimitBlocks(now: Date): SubscriptionAccountLimitBlock[] {
-    this.database.prepare('DELETE FROM subscription_account_limit_blocks WHERE blocked_until <= ?').run(now.toISOString());
     const rows = this.database
       .prepare(
         `SELECT subscription_account_name, blocked_model, rate_limit_window, blocked_until
-         FROM subscription_account_limit_blocks ORDER BY subscription_account_name, blocked_model`,
+         FROM subscription_account_limit_blocks WHERE blocked_until > ? ORDER BY subscription_account_name, blocked_model`,
       )
-      .all() as {
+      .all(now.toISOString()) as {
       subscription_account_name: string;
       blocked_model: string;
       rate_limit_window: string;

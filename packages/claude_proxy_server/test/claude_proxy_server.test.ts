@@ -581,6 +581,30 @@ describe('claude-proxy', () => {
     assert.deepEqual(readUpstreamSubscriptionAccountNames(), ['claude_code', 'Work']);
   });
 
+  test('forwards a request with Claude Code\'s own token when route planning throws', async () => {
+    await startProxy((_, upstreamResponse) => sendStreamingMessage(upstreamResponse, 'Hello'));
+    storeBothTestGrants();
+    claudeProxyServer.subscriptionAccountRouter.planRoutes = async () => {
+      throw new Error('database is locked');
+    };
+    const response = await sendClaudeCodeRequest();
+    await response.text();
+    assert.equal(response.status, 200);
+    assert.deepEqual(readUpstreamSubscriptionAccountNames(), ['claude_code']);
+  });
+
+  test('forwards a request with Claude Code\'s own token when the project lookup throws', async () => {
+    await startProxy((_, upstreamResponse) => sendStreamingMessage(upstreamResponse, 'Hello'));
+    storeBothTestGrants();
+    claudeProxyServer.requestDatabase.findProjectPath = () => {
+      throw new Error('database is locked');
+    };
+    const response = await sendClaudeCodeRequest();
+    await response.text();
+    assert.equal(response.status, 200);
+    assert.deepEqual(readUpstreamSubscriptionAccountNames(), ['claude_code']);
+  });
+
   test('forwards requests unchanged while subscription_accounts.yml has an error', async () => {
     await startProxy(
       (_, upstreamResponse) => sendStreamingMessage(upstreamResponse, 'Hello'),

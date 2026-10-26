@@ -6,7 +6,7 @@ import {
   readAssembledMessageToolText,
   type AssembledMessage,
 } from './anthropic_message_stream_assembler.ts';
-import { extractClaudeCodeRequestContext } from './claude_code_request_context.ts';
+import { extractClaudeCodeRequestContext, type ClaudeCodeRequestContext } from './claude_code_request_context.ts';
 import {
   estimateMessageCostUsd,
   findModelTokenPrices,
@@ -61,10 +61,10 @@ export async function handleProxyRequest(
 
   const requestContext = extractClaudeCodeRequestContext(clientRequest.headers, parseJsonOrNull(requestBody.toString('utf8')));
   const isSubscriptionAccountRoutedRequest = clientAuthKind === 'oauth' && requestUrl.pathname.startsWith('/v1/messages');
-  // A request without an environment block takes its project from the conversation, so it goes to the same account.
-  const projectPath = isSubscriptionAccountRoutedRequest
-    ? requestDatabase.findProjectPath(requestContext.sessionId, requestContext.projectPath, requestContext.previousUpstreamRequestId).projectPath
-    : null;
+  // Planning runs before insertStartedRequest, so that the project lookup cannot find the request itself.
+  const plannedRoutes = isSubscriptionAccountRoutedRequest
+    ? await planSubscriptionAccountRoutesSafely(requestDatabase, subscriptionAccountRouter, requestContext)
+    : [];
   const proxiedRequestId = !recordedRequestPaths.has(requestUrl.pathname) ? null : recordSafely(() =>
     requestDatabase.insertStartedRequest({
       startedAt: new Date(startedAtMs).toISOString(),
@@ -86,9 +86,6 @@ export async function handleProxyRequest(
     if (proxiedRequestId !== null) recordSafely(() => requestDatabase.completeRequest(proxiedRequestId, completedRequest));
   };
 
-  const plannedRoutes = isSubscriptionAccountRoutedRequest
-    ? await subscriptionAccountRouter.planRoutes(projectPath, requestContext.model, new Date())
-    : [];
   const upstreamTargets: UpstreamTarget[] =
     plannedRoutes.length > 0
       ? plannedRoutes.map((plannedRoute) => ({ routeKind: 'subscription_account', plannedRoute }))
@@ -185,6 +182,29 @@ export async function handleProxyRequest(
       },
     );
     return;
+  }
+}
+
+/**
+ * Returns the routes of `SubscriptionAccountRouter` for the request's project. A request without an environment block
+ * takes its project from the conversation, so it goes to the same account. When the database or the router fails,
+ * it logs the error and returns an empty plan. The request then goes upstream with Claude Code's own token.
+ */
+async function planSubscriptionAccountRoutesSafely(
+  requestDatabase: RequestDatabase,
+  subscriptionAccountRouter: SubscriptionAccountRouter,
+  requestContext: ClaudeCodeRequestContext,
+): Promise<PlannedSubscriptionAccountRoute[]> {
+  try {
+    const { projectPath } = requestDatabase.findProjectPath(
+      requestContext.sessionId,
+      requestContext.projectPath,
+      requestContext.previousUpstreamRequestId,
+    );
+    return await subscriptionAccountRouter.planRoutes(projectPath, requestContext.model, new Date());
+  } catch (error) {
+    console.error(`claude-proxy could not plan the subscription account routes, and sends Claude Code's own token: ${(error as Error).message}`);
+    return [];
   }
 }
 
