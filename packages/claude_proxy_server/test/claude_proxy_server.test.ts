@@ -385,6 +385,70 @@ describe('claude-proxy', () => {
     assert.deepEqual(readUpstreamSubscriptionAccountNames(), ['Work', 'Personal']);
   });
 
+  describe('failover utilization', () => {
+    function respondFromPersonalAtUtilization(utilizationHeaders: Record<string, string>): FakeUpstreamResponder {
+      return (receivedRequest, upstreamResponse) => {
+        if (receivedRequest.headers.authorization === personalAuthorization) sendStreamingMessage(upstreamResponse, 'Hello from Personal', utilizationHeaders);
+        else sendStreamingMessage(upstreamResponse, 'Hello from Work');
+      };
+    }
+
+    test('routes away from an account at the failover utilization, before any rejection', async () => {
+      await startProxy(respondFromPersonalAtUtilization({ 'anthropic-ratelimit-unified-7d-utilization': '0.98' }));
+      storeBothTestGrants();
+      await (await sendClaudeCodeRequest()).text();
+      await (await sendClaudeCodeRequest()).text();
+      assert.deepEqual(readUpstreamSubscriptionAccountNames(), ['Personal', 'Work']);
+    });
+
+    test('routes away on the 5-hour window too', async () => {
+      await startProxy(
+        respondFromPersonalAtUtilization({ 'anthropic-ratelimit-unified-5h-utilization': '0.99', 'anthropic-ratelimit-unified-7d-utilization': '0.10' }),
+      );
+      storeBothTestGrants();
+      await (await sendClaudeCodeRequest()).text();
+      await (await sendClaudeCodeRequest()).text();
+      assert.deepEqual(readUpstreamSubscriptionAccountNames(), ['Personal', 'Work']);
+    });
+
+    test('keeps using an account below the failover utilization', async () => {
+      await startProxy(respondFromPersonalAtUtilization({ 'anthropic-ratelimit-unified-7d-utilization': '0.97' }));
+      storeBothTestGrants();
+      await (await sendClaudeCodeRequest()).text();
+      await (await sendClaudeCodeRequest()).text();
+      assert.deepEqual(readUpstreamSubscriptionAccountNames(), ['Personal', 'Personal']);
+    });
+
+    test('returns to the account when its utilization falls below the threshold', async () => {
+      await startProxy((receivedRequest, upstreamResponse) => {
+        if (receivedRequest.path === '/api/oauth/usage') {
+          sendJsonResponse(upstreamResponse, 200, { five_hour: { utilization: 50, resets_at: '2026-11-01T00:00:00.000Z' }, seven_day: { utilization: 50, resets_at: '2026-11-01T00:00:00.000Z' } });
+        } else if (receivedRequest.headers.authorization === personalAuthorization) {
+          sendStreamingMessage(upstreamResponse, 'Hello from Personal', { 'anthropic-ratelimit-unified-7d-utilization': '0.98' });
+        } else sendStreamingMessage(upstreamResponse, 'Hello from Work');
+      });
+      storeBothTestGrants();
+      await (await sendClaudeCodeRequest()).text();
+      await (await sendClaudeCodeRequest()).text();
+      await claudeProxyServer.subscriptionAccountUsageMonitor.checkAllSubscriptionAccountUsage();
+      await (await sendClaudeCodeRequest()).text();
+      assert.deepEqual(
+        receivedRequests.filter((receivedRequest) => receivedRequest.path.startsWith('/v1/messages')).map(readSubscriptionAccountName),
+        ['Personal', 'Work', 'Personal'],
+      );
+    });
+
+    test('shows an account at the threshold as blocked in the status', async () => {
+      await startProxy(respondFromPersonalAtUtilization({ 'anthropic-ratelimit-unified-7d-utilization': '0.98' }));
+      storeBothTestGrants();
+      await (await sendClaudeCodeRequest()).text();
+      const status = await readApi('subscription-account-status');
+      const personalStatus = status.subscriptionAccounts.find((statusAccount: any) => statusAccount.subscriptionAccountName === 'Personal');
+      assert.equal(personalStatus.isBlocked, true);
+      assert.equal(personalStatus.blockedUntil, null);
+    });
+  });
+
   test('blocks only the rejected model on a per-model weekly rejection', async () => {
     await startProxy((receivedRequest, upstreamResponse) => {
       const requestModel = JSON.parse(receivedRequest.body).model;

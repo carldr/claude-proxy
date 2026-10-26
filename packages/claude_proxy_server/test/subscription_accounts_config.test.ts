@@ -97,3 +97,16 @@ test('rejects an account with an empty colour', () => {
 test('treats an empty file as no accounts', () => {
   assert.deepEqual(parseSubscriptionAccountsConfig(null, homeDirectory), emptySubscriptionAccountsConfig);
 });
+
+test('reads failover_utilization and defaults it to 0.98', () => {
+  assert.equal(parseSubscriptionAccountsConfig(exampleYaml, homeDirectory).failoverUtilization, 0.98);
+  assert.equal(parseSubscriptionAccountsConfig({ ...exampleYaml, failover_utilization: 0.9 }, homeDirectory).failoverUtilization, 0.9);
+  assert.equal(parseSubscriptionAccountsConfig({ ...exampleYaml, failover_utilization: 1 }, homeDirectory).failoverUtilization, 1);
+  assert.equal(emptySubscriptionAccountsConfig.failoverUtilization, 0.98);
+  for (const invalidValue of [1.5, 0, -0.1, '0.9']) {
+    assert.throws(
+      () => parseSubscriptionAccountsConfig({ ...exampleYaml, failover_utilization: invalidValue }, homeDirectory),
+      /failover_utilization must be a number above 0 and at most 1/,
+    );
+  }
+});

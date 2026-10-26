@@ -1,5 +1,5 @@
 import type { SubscriptionAccountGrantRefresher } from './subscription_account_oauth.ts';
-import type { SubscriptionAccountStore } from './subscription_account_store.ts';
+import type { SubscriptionAccountStore, SubscriptionAccountUsageWindow } from './subscription_account_store.ts';
 import { findSubscriptionAccountNameForProject, type SubscriptionAccountsConfig } from './subscription_accounts_config.ts';
 import type { SubscriptionRateLimit } from './subscription_rate_limit_headers.ts';
 
@@ -7,6 +7,20 @@ export interface PlannedSubscriptionAccountRoute {
   subscriptionAccountName: string;
   /** Null when the subscription account has no live grant. The request then goes upstream with Claude Code's own token. */
   accessToken: string | null;
+}
+
+/**
+ * Returns true when the 5-hour or the weekly usage window is at or above the failover utilization.
+ * The router and the subscription account status both use this rule.
+ */
+export function isSubscriptionAccountAboveFailoverUtilization(
+  usageWindows: SubscriptionAccountUsageWindow[],
+  failoverUtilization: number,
+): boolean {
+  return usageWindows.some(
+    (usageWindow) =>
+      (usageWindow.usageWindowName === '5h' || usageWindow.usageWindowName === '7d') && usageWindow.utilization >= failoverUtilization,
+  );
 }
 
 /**
@@ -45,6 +59,10 @@ export class SubscriptionAccountRouter {
         (limitBlock) =>
           limitBlock.subscriptionAccountName === subscriptionAccountName &&
           (limitBlock.blockedModel === '' || limitBlock.blockedModel === model),
+      ) ||
+      isSubscriptionAccountAboveFailoverUtilization(
+        this.subscriptionAccountStore.readUsageWindows(subscriptionAccountName).usageWindows,
+        config.failoverUtilization,
       );
 
     const plannedRoutes: PlannedSubscriptionAccountRoute[] = [];
