@@ -1,5 +1,5 @@
 export interface RouteDotAppearance {
-  letter: string;
+  letter?: string;
   colour: string;
 }
 

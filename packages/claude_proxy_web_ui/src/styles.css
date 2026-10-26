@@ -13,6 +13,7 @@
   --gauge-track: #dfe4ea;
   --gauge-fill: #3a4656;
   --gauge-threshold: #b4441c;
+  --block-red: #e5484d;
   --font-text: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
   --font-code: ui-monospace, 'SF Mono', Menlo, monospace;
   color-scheme: light;
@@ -106,113 +107,89 @@ a {
   overflow: hidden;
 }
 
-/* Routing panel */
+/* Subscription accounts panel */
 
-.routing-panel {
+.subscription-accounts-panel {
   display: grid;
-  grid-template-columns: auto auto 1fr;
-  gap: 24px;
-  align-items: center;
+  gap: 12px;
   padding: 16px 20px;
   background: var(--surface);
   border-bottom: 1px solid var(--line);
 }
 
-.active-route {
+.subscription-accounts-toolbar {
   display: flex;
+  justify-content: flex-end;
   align-items: center;
   gap: 12px;
-  min-width: 220px;
 }
 
-.active-route-name {
-  font-size: 17px;
-  font-weight: 600;
-  line-height: 1.2;
-}
-
-.active-route-reason {
-  color: var(--ink-muted);
-}
-
-.routing-controls {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.routing-mode-switch {
-  display: inline-flex;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  overflow: hidden;
-}
-
-.routing-mode-switch button {
-  border: 0;
-  background: var(--surface);
-  padding: 4px 10px;
-}
-
-.routing-mode-switch button + button {
-  border-left: 1px solid var(--line);
-}
-
-.routing-mode-switch button[aria-pressed='true'] {
-  background: var(--ink);
-  color: var(--surface);
-}
-
-.routing-controls label {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  color: var(--ink-muted);
-}
-
-.weekly-usage {
+.subscription-account-cards {
   display: grid;
-  gap: 6px;
-  max-width: 560px;
-  justify-self: end;
-  width: 100%;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 16px;
 }
 
-.weekly-usage-heading {
+.subscription-account-card {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-sunken);
+}
+
+.subscription-account-header {
   display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: baseline;
+  align-items: center;
+  gap: 10px;
 }
 
-.weekly-usage-percent {
-  font-size: 17px;
+.subscription-account-name {
+  font-size: 15px;
   font-weight: 600;
 }
 
-.weekly-usage-gauge {
+.usage-window {
+  display: grid;
+  grid-template-columns: 56px 1fr auto;
+  gap: 4px 10px;
+  align-items: center;
+}
+
+.usage-window-bar {
   position: relative;
-  height: 10px;
-  border-radius: 5px;
+  height: 8px;
+  border-radius: 4px;
   background: var(--gauge-track);
 }
 
-.weekly-usage-gauge-fill {
+.usage-window-bar-fill {
   position: absolute;
   inset: 0 auto 0 0;
-  border-radius: 5px;
+  border-radius: 4px;
   background: var(--gauge-fill);
 }
 
-.weekly-usage-gauge-fill[data-limit-reached='true'] {
-  background: var(--gauge-threshold);
+.usage-window-bar-fill[data-is-full='true'] {
+  background: var(--block-red);
 }
 
-.weekly-usage-details {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
+.usage-window-reset {
+  grid-column: 2 / -1;
   color: var(--ink-muted);
+}
+
+.subscription-account-blocked {
+  color: var(--block-red);
+  font-weight: 600;
+}
+
+.subscription-account-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .text-button {
@@ -223,7 +200,6 @@ a {
 }
 
 .config-errors {
-  grid-column: 1 / -1;
   margin: 0;
   padding: 8px 12px;
   border-left: 3px solid var(--status-error);
@@ -524,14 +500,6 @@ details > summary {
 }
 
 @media (max-width: 900px) {
-  .routing-panel {
-    grid-template-columns: 1fr;
-  }
-
-  .weekly-usage {
-    justify-self: stretch;
-  }
-
   .requests-view[data-has-detail='true'] {
     grid-template-columns: minmax(0, 1fr);
   }
