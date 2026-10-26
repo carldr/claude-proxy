@@ -133,7 +133,7 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:4100
 
 ## Configuration
 
-All configuration is in `~/.claude-proxy/`. The proxy reads each file again when the file changes.
+All configuration is in `~/.claude-proxy/`. The proxy reads each file again when the file changes. At start, the proxy makes the directory and `requests.sqlite` readable by you only. It does not start when another user owns them, because `requests.sqlite` holds the refresh tokens.
 
 | File | Contents |
 | --- | --- |
