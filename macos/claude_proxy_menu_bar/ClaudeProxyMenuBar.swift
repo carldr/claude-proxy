@@ -100,9 +100,9 @@ func describeSubscriptionAccount(_ subscriptionAccount: SubscriptionAccountStatu
     }
     if subscriptionAccount.isBlocked {
         if let blockedUntil = subscriptionAccount.blockedUntil {
-            return "\(name): blocked until \(formatBlockedUntil(blockedUntil))"
+            return "\(name): rejected, retried last until \(formatBlockedUntil(blockedUntil))"
         }
-        return "\(name): not used, at the failover limit"
+        return "\(name): avoided, at the failover limit"
     }
     if let weeklyUtilization = subscriptionAccount.weeklyUtilization {
         return "\(name): \(Int((weeklyUtilization * 100).rounded()))% weekly"

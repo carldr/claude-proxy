@@ -145,8 +145,8 @@ function sortUsageWindows(usageWindows: SubscriptionAccountUsageWindow[]): Subsc
 }
 
 function describeBlock(blockedUntil: string | null, failoverUtilization: number): string {
-  if (blockedUntil === null) return `Not used: at ${Math.round(failoverUtilization * 100)}% of a limit`;
-  return `Blocked until ${new Date(blockedUntil).toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' })}`;
+  if (blockedUntil === null) return `Avoided: at ${Math.round(failoverUtilization * 100)}% of a limit`;
+  return `Rejected, retried last until ${new Date(blockedUntil).toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' })}`;
 }
 
 /** Formats the time until an ISO timestamp as "2h 47m", or "4d 21h" from 24 hours up. */
