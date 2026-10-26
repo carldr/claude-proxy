@@ -672,6 +672,36 @@ describe('claude-proxy', () => {
     assert.equal((await readApi('proxied-requests'))[0].upstream_attempt_count, 2);
   });
 
+  test('forwards a later 401, 529 or network error instead of the held rejection of the project\'s own account', async () => {
+    let workRequestNumber = 0;
+    await startProxy((receivedRequest, upstreamResponse) => {
+      if (receivedRequest.headers.authorization === personalAuthorization) {
+        sendRateLimitRejection(upstreamResponse, 'Personal', fableWeeklyLimitRejectionHeaders);
+        return;
+      }
+      workRequestNumber++;
+      if (workRequestNumber === 1) sendJsonResponse(upstreamResponse, 401, { type: 'error', error: { type: 'authentication_error' } });
+      else if (workRequestNumber === 2) sendJsonResponse(upstreamResponse, 529, { type: 'error', error: { type: 'overloaded_error' } });
+      else upstreamResponse.socket!.destroy();
+    });
+    storeBothTestGrants();
+    const defaultProjectPath = '/Users/example_user/Development/example_project';
+
+    // Personal's rejection blocks only the requested model, so each request uses a new model and Personal stays first.
+    const statusCodes: number[] = [];
+    for (const model of ['claude-model-a', 'claude-model-b', 'claude-model-c']) {
+      const proxyResponse = await sendClaudeCodeRequest(buildClaudeCodeRequestBody(defaultProjectPath, model));
+      await proxyResponse.text();
+      statusCodes.push(proxyResponse.status);
+    }
+    assert.deepEqual(statusCodes, [401, 529, 502]);
+    assert.deepEqual(readUpstreamSubscriptionAccountNames(), ['Personal', 'Work', 'Personal', 'Work', 'Personal', 'Work']);
+    assert.deepEqual(
+      (await readApi('proxied-requests')).map((requestSummary: { upstream_attempt_count: number }) => requestSummary.upstream_attempt_count),
+      [2, 2, 2],
+    );
+  });
+
   test('forwards a 401, a 529 and a network error without failover', async () => {
     let upstreamRequestNumber = 0;
     await startProxy((_, upstreamResponse) => {
