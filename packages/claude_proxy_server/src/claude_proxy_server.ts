@@ -11,6 +11,7 @@ import { RequestDatabase } from './request_database.ts';
 import { SubscriptionAccountGrantRefresher, type OAuthEndpoints } from './subscription_account_oauth.ts';
 import { SubscriptionAccountRouter } from './subscription_account_router.ts';
 import { SubscriptionAccountStore } from './subscription_account_store.ts';
+import { SubscriptionAccountUsageMonitor } from './subscription_account_usage_monitor.ts';
 import {
   emptySubscriptionAccountsConfig,
   parseSubscriptionAccountsConfig,
@@ -38,6 +39,7 @@ export interface ClaudeProxyServer {
   requestDatabase: RequestDatabase;
   subscriptionAccountStore: SubscriptionAccountStore;
   subscriptionAccountRouter: SubscriptionAccountRouter;
+  subscriptionAccountUsageMonitor: SubscriptionAccountUsageMonitor;
   close(): Promise<void>;
 }
 
@@ -89,10 +91,19 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
   const requestDatabase = new RequestDatabase(path.join(options.claudeProxyDirectory, 'requests.sqlite'));
   requestDatabase.markUnfinishedRequestsInterrupted();
   const subscriptionAccountStore = new SubscriptionAccountStore(path.join(options.claudeProxyDirectory, 'requests.sqlite'));
+  const readSubscriptionAccountsConfig = () => subscriptionAccountsConfigFile.read().config;
+  // The router and the usage monitor share one refresher, so that one refresh at a time runs for each grant.
+  const subscriptionAccountGrantRefresher = new SubscriptionAccountGrantRefresher(subscriptionAccountStore, options.oauthEndpoints);
   const subscriptionAccountRouter = new SubscriptionAccountRouter(
     subscriptionAccountStore,
-    new SubscriptionAccountGrantRefresher(subscriptionAccountStore, options.oauthEndpoints),
-    () => subscriptionAccountsConfigFile.read().config,
+    subscriptionAccountGrantRefresher,
+    readSubscriptionAccountsConfig,
+  );
+  const subscriptionAccountUsageMonitor = new SubscriptionAccountUsageMonitor(
+    subscriptionAccountStore,
+    subscriptionAccountGrantRefresher,
+    readSubscriptionAccountsConfig,
+    options.anthropicBaseUrl,
   );
 
   const proxyRequest = (clientRequest: IncomingMessage, clientResponse: ServerResponse) =>
@@ -114,6 +125,9 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
       await handleWebApiRequest(clientRequest, clientResponse, {
         requestDatabase,
         readConfigErrors,
+        subscriptionAccountStore,
+        subscriptionAccountUsageMonitor,
+        readSubscriptionAccountsConfig,
         claudeCodeProjectsDirectory: options.claudeCodeProjectsDirectory,
       });
     } else if (requestPath.startsWith(webUiPathPrefix)) {
@@ -170,7 +184,9 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
     requestDatabase,
     subscriptionAccountStore,
     subscriptionAccountRouter,
+    subscriptionAccountUsageMonitor,
     async close() {
+      subscriptionAccountUsageMonitor.stop();
       httpServer.closeAllConnections();
       for (const connectClientSocket of connectClientSockets) connectClientSocket.destroy();
       await new Promise<void>((resolve) => httpServer.close(() => resolve()));

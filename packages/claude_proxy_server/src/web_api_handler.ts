@@ -3,13 +3,62 @@ import os from 'node:os';
 import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ProxiedRequestFilters, RequestDatabase } from './request_database.ts';
+import type { SubscriptionAccountStore, SubscriptionAccountUsageWindow } from './subscription_account_store.ts';
+import type { SubscriptionAccountUsageMonitor } from './subscription_account_usage_monitor.ts';
+import type { SubscriptionAccountsConfig } from './subscription_accounts_config.ts';
 
 export const webApiPathPrefix = '/_proxy/api/';
 
 export interface WebApiHandlerDependencies {
   requestDatabase: RequestDatabase;
   readConfigErrors: () => string[];
+  subscriptionAccountStore: SubscriptionAccountStore;
+  subscriptionAccountUsageMonitor: SubscriptionAccountUsageMonitor;
+  readSubscriptionAccountsConfig: () => SubscriptionAccountsConfig;
   claudeCodeProjectsDirectory: string;
+}
+
+export interface SubscriptionAccountStatus {
+  subscriptionAccounts: {
+    subscriptionAccountName: string;
+    colour: string;
+    emailAddress: string | null;
+    loginState: 'logged_in' | 'login_required';
+    /** The `7d` usage window, as a fraction from 0 to 1. */
+    weeklyUtilization: number | null;
+    /** True only for a block on the whole account, not for a block on one model. */
+    isBlocked: boolean;
+    blockedUntil: string | null;
+    usageWindows: SubscriptionAccountUsageWindow[];
+    usageCheckedAt: string | null;
+  }[];
+  configErrors: string[];
+}
+
+function buildSubscriptionAccountStatus(dependencies: WebApiHandlerDependencies): SubscriptionAccountStatus {
+  const { subscriptionAccountStore } = dependencies;
+  const activeLimitBlocks = subscriptionAccountStore.readActiveLimitBlocks(new Date());
+  return {
+    subscriptionAccounts: dependencies.readSubscriptionAccountsConfig().subscriptionAccounts.map((subscriptionAccount) => {
+      const grant = subscriptionAccountStore.readGrant(subscriptionAccount.name);
+      const { usageWindows, checkedAt } = subscriptionAccountStore.readUsageWindows(subscriptionAccount.name);
+      const wholeAccountBlock = activeLimitBlocks.find(
+        (limitBlock) => limitBlock.subscriptionAccountName === subscriptionAccount.name && limitBlock.blockedModel === '',
+      );
+      return {
+        subscriptionAccountName: subscriptionAccount.name,
+        colour: subscriptionAccount.colour,
+        emailAddress: grant?.emailAddress ?? null,
+        loginState: grant && !grant.isRefreshTokenRejected ? 'logged_in' : 'login_required',
+        weeklyUtilization: usageWindows.find((usageWindow) => usageWindow.usageWindowName === '7d')?.utilization ?? null,
+        isBlocked: wholeAccountBlock !== undefined,
+        blockedUntil: wholeAccountBlock?.blockedUntil ?? null,
+        usageWindows,
+        usageCheckedAt: checkedAt,
+      };
+    }),
+    configErrors: dependencies.readConfigErrors(),
+  };
 }
 
 /** Serves the JSON API that the web UI and the menu bar app read. */
@@ -83,6 +132,15 @@ export async function handleWebApiRequest(
         200,
         sessions.map((session) => ({ ...session, session_log_file_path: sessionLogFilePaths.get(String(session.session_id)) ?? null })),
       );
+    }
+
+    if (clientRequest.method === 'GET' && apiPath === 'subscription-account-status') {
+      return sendJson(clientResponse, 200, buildSubscriptionAccountStatus(dependencies));
+    }
+
+    if (clientRequest.method === 'POST' && apiPath === 'subscription-account-usage-check') {
+      const usageCheckErrors = await dependencies.subscriptionAccountUsageMonitor.checkAllSubscriptionAccountUsage();
+      return sendJson(clientResponse, 200, { ...buildSubscriptionAccountStatus(dependencies), usageCheckErrors });
     }
 
     return sendJson(clientResponse, 404, { error: `No API endpoint ${clientRequest.method} ${requestUrl.pathname}` });

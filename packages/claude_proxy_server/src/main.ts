@@ -16,6 +16,10 @@ const claudeProxyServer = createClaudeProxyServer({
 claudeProxyServer.httpServer.listen(claudeProxyPort, '127.0.0.1', () => {
   console.log(`claude-proxy listens on http://127.0.0.1:${claudeProxyPort}, web UI at http://127.0.0.1:${claudeProxyPort}/_proxy/`);
 });
+claudeProxyServer.subscriptionAccountUsageMonitor.start();
+void claudeProxyServer.subscriptionAccountUsageMonitor.checkAllSubscriptionAccountUsage().then((usageCheckErrors) => {
+  for (const usageCheckError of usageCheckErrors) console.error(`claude-proxy usage check failed for ${usageCheckError}`);
+});
 
 for (const signalName of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signalName, () => {
