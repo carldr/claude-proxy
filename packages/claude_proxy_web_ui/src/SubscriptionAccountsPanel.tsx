@@ -70,7 +70,6 @@ export function SubscriptionAccountsPanel({ accountStatus, accountStatusError, o
           <SubscriptionAccountCard
             key={subscriptionAccount.subscriptionAccountName}
             subscriptionAccount={subscriptionAccount}
-            failoverUtilization={accountStatus.failoverUtilization}
             onLogin={openLogin}
           />
         ))}
@@ -83,11 +82,9 @@ export function SubscriptionAccountsPanel({ accountStatus, accountStatusError, o
 
 function SubscriptionAccountCard({
   subscriptionAccount,
-  failoverUtilization,
   onLogin,
 }: {
   subscriptionAccount: SubscriptionAccountStatus;
-  failoverUtilization: number;
   onLogin: (subscriptionAccountName: string) => void;
 }) {
   const isLoginRequired = subscriptionAccount.loginState === 'login_required';
@@ -101,7 +98,7 @@ function SubscriptionAccountCard({
       {sortUsageWindows(subscriptionAccount.usageWindows).map((usageWindow) => (
         <UsageWindowBar key={usageWindow.usageWindowName} usageWindow={usageWindow} />
       ))}
-      {subscriptionAccount.isBlocked && <div className="subscription-account-blocked">{describeBlock(subscriptionAccount.blockedUntil, failoverUtilization)}</div>}
+      {subscriptionAccount.isBlocked && <div className="subscription-account-blocked">{describeBlock(subscriptionAccount.blockedUntil, subscriptionAccount.failoverUtilization)}</div>}
       <div className="subscription-account-actions">
         {isLoginRequired ? (
           <button onClick={() => onLogin(subscriptionAccount.subscriptionAccountName)}>Log in</button>

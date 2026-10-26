@@ -18,12 +18,12 @@ export interface SubscriptionAccountStatus {
   blockedRateLimitWindow: string | null;
   usageWindows: SubscriptionAccountUsageWindow[];
   usageCheckedAt: string | null;
+  /** The fraction of a 5-hour or weekly window at which the proxy avoids this account. 1 means no threshold. */
+  failoverUtilization: number;
 }
 
 export interface SubscriptionAccountStatusResponse {
   subscriptionAccounts: SubscriptionAccountStatus[];
-  /** The fraction of a 5-hour or weekly window at which the proxy avoids an account. */
-  failoverUtilization: number;
   configErrors: string[];
 }
 
