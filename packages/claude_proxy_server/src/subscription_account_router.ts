@@ -11,15 +11,20 @@ export interface PlannedSubscriptionAccountRoute {
 
 /**
  * Returns true when the 5-hour or the weekly usage window is at or above the failover utilization.
+ * A window whose reset time has passed does not count, because its stored utilization is out of date.
  * The router and the subscription account status both use this rule.
  */
 export function isSubscriptionAccountAboveFailoverUtilization(
   usageWindows: SubscriptionAccountUsageWindow[],
   failoverUtilization: number,
+  now: Date,
 ): boolean {
+  const nowIsoString = now.toISOString();
   return usageWindows.some(
     (usageWindow) =>
-      (usageWindow.usageWindowName === '5h' || usageWindow.usageWindowName === '7d') && usageWindow.utilization >= failoverUtilization,
+      (usageWindow.usageWindowName === '5h' || usageWindow.usageWindowName === '7d') &&
+      usageWindow.utilization >= failoverUtilization &&
+      (usageWindow.resetsAt === null || usageWindow.resetsAt > nowIsoString),
   );
 }
 
@@ -63,6 +68,7 @@ export class SubscriptionAccountRouter {
       isSubscriptionAccountAboveFailoverUtilization(
         this.subscriptionAccountStore.readUsageWindows(subscriptionAccountName).usageWindows,
         config.failoverUtilization,
+        now,
       );
 
     const plannedRoutes: PlannedSubscriptionAccountRoute[] = [];
