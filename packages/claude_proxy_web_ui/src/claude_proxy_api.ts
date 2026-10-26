@@ -1,23 +1,30 @@
-export type RoutingMode = 'auto' | 'force_subscription' | 'force_api_key';
-
-export interface RouteAppearance {
-  routeKind: 'subscription' | 'api_key';
-  routeName: string;
-  letter: string;
-  colour: string;
+export interface SubscriptionAccountUsageWindow {
+  usageWindowName: string;
+  /** A fraction from 0 to 1. */
+  utilization: number;
+  resetsAt: string | null;
 }
 
-export interface RoutingStatus {
-  routingMode: RoutingMode;
-  selectedApiKeyRouteName: string | null;
-  activeRoute: RouteAppearance;
-  subscriptionWeeklyLimitReached: boolean;
-  subscriptionWeeklyUtilization: number | null;
-  subscriptionWeeklyResetsAt: string | null;
-  subscriptionUsageCheckedAt: string | null;
-  apiKeyRoutes: Array<{ routeName: string; letter: string; colour: string; baseUrl: string }>;
+export interface SubscriptionAccountStatus {
+  subscriptionAccountName: string;
+  colour: string;
+  emailAddress: string | null;
+  loginState: 'logged_in' | 'login_required';
+  weeklyUtilization: number | null;
+  isBlocked: boolean;
+  /** Null while `isBlocked` is true means the account is at the failover utilization of a window. */
+  blockedUntil: string | null;
+  usageWindows: SubscriptionAccountUsageWindow[];
+  usageCheckedAt: string | null;
+}
+
+export interface SubscriptionAccountStatusResponse {
+  subscriptionAccounts: SubscriptionAccountStatus[];
   configErrors: string[];
-  subscriptionUsageCheckError?: string | null;
+}
+
+export interface SubscriptionAccountUsageCheckResponse extends SubscriptionAccountStatusResponse {
+  usageCheckErrors: string[];
 }
 
 export interface ProxiedRequestSummary {
@@ -145,15 +152,16 @@ function buildFilterQueryParameters(filters: ProxiedRequestFilters): URLSearchPa
 async function requestApi<ResponseType>(apiPath: string, requestInit?: RequestInit): Promise<ResponseType> {
   const apiResponse = await fetch(`${apiBasePath}${apiPath}`, requestInit);
   const responseValue = await apiResponse.json();
-  if (!apiResponse.ok && !('routingMode' in responseValue)) throw new Error(responseValue.error ?? `HTTP ${apiResponse.status}`);
+  if (!apiResponse.ok) throw new Error(responseValue.error ?? `HTTP ${apiResponse.status}`);
   return responseValue as ResponseType;
 }
 
 export const claudeProxyApi = {
-  readRoutingStatus: () => requestApi<RoutingStatus>('routing-status'),
-  updateRoutingSettings: (routingSettings: { routingMode?: RoutingMode; selectedApiKeyRouteName?: string }) =>
-    requestApi<RoutingStatus>('routing-settings', { method: 'PUT', body: JSON.stringify(routingSettings) }),
-  checkSubscriptionUsage: () => requestApi<RoutingStatus>('subscription-usage-check', { method: 'POST' }),
+  readSubscriptionAccountStatus: () => requestApi<SubscriptionAccountStatusResponse>('subscription-account-status'),
+  checkSubscriptionAccountUsage: () =>
+    requestApi<SubscriptionAccountUsageCheckResponse>('subscription-account-usage-check', { method: 'POST' }),
+  startSubscriptionAccountLogin: (subscriptionAccountName: string) =>
+    requestApi<{ authorizeUrl: string }>(`subscription-accounts/${encodeURIComponent(subscriptionAccountName)}/login`, { method: 'POST' }),
   listProxiedRequests: (filters: ProxiedRequestFilters, beforeId?: number) => {
     const queryParameters = buildFilterQueryParameters(filters);
     if (beforeId !== undefined) queryParameters.set('beforeId', String(beforeId));

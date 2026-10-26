@@ -1,10 +1,10 @@
 import { useCallback, useState } from 'react';
-import { claudeProxyApi, emptyProxiedRequestFilters, type ProxiedRequestFilters, type RoutingStatus } from './claude_proxy_api.ts';
+import { claudeProxyApi, emptyProxiedRequestFilters, type ProxiedRequestFilters, type SubscriptionAccountStatusResponse } from './claude_proxy_api.ts';
 import { CostSummaryView } from './CostSummaryView.tsx';
 import { ProxiedRequestsView } from './ProxiedRequestsView.tsx';
 import type { RouteDotAppearance } from './RouteDot.tsx';
-import { RoutingPanel } from './RoutingPanel.tsx';
 import { SessionsView } from './SessionsView.tsx';
+import { SubscriptionAccountsPanel } from './SubscriptionAccountsPanel.tsx';
 import { usePolling } from './use_polling.ts';
 
 type ApplicationView = 'requests' | 'sessions' | 'costs';
@@ -16,37 +16,38 @@ const applicationViewLabels: Record<ApplicationView, string> = {
 };
 
 const subscriptionRouteAppearance: RouteDotAppearance = { letter: 'S', colour: '#ffffff' };
+const passthroughRouteAppearance: RouteDotAppearance = { letter: 'K', colour: '#9aa3ae' };
 const unknownRouteAppearance: RouteDotAppearance = { letter: '?', colour: '#9aa3ae' };
 
 export function ClaudeProxyApplication() {
-  const [routingStatus, setRoutingStatus] = useState<RoutingStatus | null>(null);
-  const [routingStatusError, setRoutingStatusError] = useState<string | null>(null);
+  const [accountStatus, setAccountStatus] = useState<SubscriptionAccountStatusResponse | null>(null);
+  const [accountStatusError, setAccountStatusError] = useState<string | null>(null);
   const [applicationView, setApplicationView] = useState<ApplicationView>('requests');
   const [requestFilters, setRequestFilters] = useState<ProxiedRequestFilters>(emptyProxiedRequestFilters);
 
   usePolling(
     () =>
-      claudeProxyApi.readRoutingStatus().then(
-        (latestRoutingStatus) => {
-          setRoutingStatus(latestRoutingStatus);
-          setRoutingStatusError(null);
+      claudeProxyApi.readSubscriptionAccountStatus().then(
+        (latestAccountStatus) => {
+          setAccountStatus(latestAccountStatus);
+          setAccountStatusError(null);
         },
-        (error: Error) => setRoutingStatusError(error.message),
+        (error: Error) => setAccountStatusError(error.message),
       ),
     5000,
     [],
   );
 
-  /** Finds the dot for a route name in a recorded request. Routes removed from routes.yml show a grey "?". */
+  /** Finds the dot for a route name in a recorded request. Names that match no account in the configuration show a grey "?". */
   const findRouteAppearance = useCallback(
     (routeName: string | null): RouteDotAppearance => {
       if (routeName === 'subscription') return subscriptionRouteAppearance;
-      const apiKeyRoute = routingStatus?.apiKeyRoutes.find((candidateRoute) => candidateRoute.routeName === routeName);
-      if (apiKeyRoute) return apiKeyRoute;
-      if (routeName === 'passthrough') return { letter: 'K', colour: '#9aa3ae' };
+      if (routeName === 'passthrough') return passthroughRouteAppearance;
+      const subscriptionAccount = accountStatus?.subscriptionAccounts.find((candidateAccount) => candidateAccount.subscriptionAccountName === routeName);
+      if (subscriptionAccount) return { colour: subscriptionAccount.colour };
       return unknownRouteAppearance;
     },
-    [routingStatus],
+    [accountStatus],
   );
 
   const showSessionRequests = (sessionId: string) => {
@@ -56,7 +57,11 @@ export function ClaudeProxyApplication() {
 
   return (
     <div className="application">
-      <RoutingPanel routingStatus={routingStatus} routingStatusError={routingStatusError} onRoutingStatusChange={setRoutingStatus} />
+      <SubscriptionAccountsPanel
+        accountStatus={accountStatus}
+        accountStatusError={accountStatusError}
+        onAccountStatusChange={setAccountStatus}
+      />
       <nav className="view-tabs" role="tablist">
         {(Object.keys(applicationViewLabels) as ApplicationView[]).map((candidateView) => (
           <button

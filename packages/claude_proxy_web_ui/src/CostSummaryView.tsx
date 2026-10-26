@@ -57,7 +57,7 @@ export function CostSummaryView({ findRouteAppearance }: { findRouteAppearance: 
                   </td>
                   <td className="numeric">{routeTotal.requestCount}</td>
                   <td className="numeric">{formatCostUsd(routeTotal.estimatedCostUsd)}</td>
-                  <td className="muted">{routeTotal.routeKind === 'subscription' ? 'At API prices, not billed' : 'Billed to this key'}</td>
+                  <td className="muted">{routeTotal.routeKind === 'subscription_account' || routeTotal.routeKind === 'subscription' ? 'At API prices, not billed' : 'Billed to this key'}</td>
                 </tr>
               ))}
             </tbody>
