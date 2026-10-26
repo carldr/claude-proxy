@@ -1,18 +1,19 @@
 # Subscription accounts and the project routes between them.
 #
 # subscription_accounts: The accounts that the proxy can use. "name" identifies the account. "colour" is its colour in the web UI.
-# Accounts log in from the web UI. This file holds no credentials.
+# "failover_utilization" is optional. The proxy avoids the account at or above this fraction of its 5-hour or weekly limit.
+# The default is 1, which means no threshold. Accounts log in from the web UI. This file holds no credentials.
 #
 # project_routes: Each route sends the requests of the projects that match "project_path_pattern" to "subscription_account".
 # The pattern is a glob. A leading "~" means the home directory. A pattern also covers every subdirectory of a match.
 # The first matching route wins.
 #
 # default_subscription_account: The account for a project that no route matches, and for a request with no project.
-#
-# failover_utilization: The proxy avoids an account at or above this fraction of its 5-hour or weekly limit. Other servers keep the rest.
 subscription_accounts:
   - name: Work
     colour: "#a1c63d"
+    # This keeps the last 2% for programs that use the account without the proxy.
+    failover_utilization: 0.98
   - name: Personal
     colour: "#ba8048"
 project_routes:
@@ -21,4 +22,3 @@ project_routes:
   - project_path_pattern: ~/Development/work-dev
     subscription_account: Work
 default_subscription_account: Personal
-failover_utilization: 0.98

@@ -82,6 +82,11 @@ project_routes:
 default_subscription_account: Personal
 `;
 
+/** The test accounts with a failover utilization of 0.98 on both accounts. */
+const subscriptionAccountsYamlWithFailoverUtilization = subscriptionAccountsYaml
+  .replace('colour: "#a1c63d" }', 'colour: "#a1c63d", failover_utilization: 0.98 }')
+  .replace('colour: "#ba8048" }', 'colour: "#ba8048", failover_utilization: 0.98 }');
+
 function sendStreamingMessage(upstreamResponse: ServerResponse, responseText: string, extraHeaders: Record<string, string> = {}) {
   upstreamResponse.writeHead(200, { 'content-type': 'text/event-stream', ...extraHeaders });
   const streamEvents = [
@@ -417,7 +422,7 @@ describe('claude-proxy', () => {
     }
 
     test('routes away from an account at the failover utilization, before any rejection', async () => {
-      await startProxy(respondFromPersonalAtUtilization({ 'anthropic-ratelimit-unified-7d-utilization': '0.98' }));
+      await startProxy(respondFromPersonalAtUtilization({ 'anthropic-ratelimit-unified-7d-utilization': '0.98' }), subscriptionAccountsYamlWithFailoverUtilization);
       storeBothTestGrants();
       await (await sendClaudeCodeRequest()).text();
       await (await sendClaudeCodeRequest()).text();
@@ -427,6 +432,7 @@ describe('claude-proxy', () => {
     test('routes away on the 5-hour window too', async () => {
       await startProxy(
         respondFromPersonalAtUtilization({ 'anthropic-ratelimit-unified-5h-utilization': '0.99', 'anthropic-ratelimit-unified-7d-utilization': '0.10' }),
+        subscriptionAccountsYamlWithFailoverUtilization,
       );
       storeBothTestGrants();
       await (await sendClaudeCodeRequest()).text();
@@ -435,7 +441,7 @@ describe('claude-proxy', () => {
     });
 
     test('keeps using an account below the failover utilization', async () => {
-      await startProxy(respondFromPersonalAtUtilization({ 'anthropic-ratelimit-unified-7d-utilization': '0.97' }));
+      await startProxy(respondFromPersonalAtUtilization({ 'anthropic-ratelimit-unified-7d-utilization': '0.97' }), subscriptionAccountsYamlWithFailoverUtilization);
       storeBothTestGrants();
       await (await sendClaudeCodeRequest()).text();
       await (await sendClaudeCodeRequest()).text();
@@ -449,7 +455,7 @@ describe('claude-proxy', () => {
         } else if (receivedRequest.headers.authorization === personalAuthorization) {
           sendStreamingMessage(upstreamResponse, 'Hello from Personal', { 'anthropic-ratelimit-unified-7d-utilization': '0.98' });
         } else sendStreamingMessage(upstreamResponse, 'Hello from Work');
-      });
+      }, subscriptionAccountsYamlWithFailoverUtilization);
       storeBothTestGrants();
       await (await sendClaudeCodeRequest()).text();
       await (await sendClaudeCodeRequest()).text();
@@ -462,7 +468,7 @@ describe('claude-proxy', () => {
     });
 
     test('ignores a usage window whose reset time has passed', async () => {
-      await startProxy(respondFromPersonalAtUtilization({}));
+      await startProxy(respondFromPersonalAtUtilization({}), subscriptionAccountsYamlWithFailoverUtilization);
       storeBothTestGrants();
       claudeProxyServer.subscriptionAccountStore.mergeUsageWindows(
         'Personal',
@@ -476,7 +482,7 @@ describe('claude-proxy', () => {
     });
 
     test('returns the project\'s own account when every account is above the failover utilization', async () => {
-      await startProxy(respondFromPersonalAtUtilization({}));
+      await startProxy(respondFromPersonalAtUtilization({}), subscriptionAccountsYamlWithFailoverUtilization);
       storeBothTestGrants();
       const resetsAt = new Date(Date.now() + 86400_000).toISOString();
       for (const subscriptionAccountName of ['Work', 'Personal']) {
@@ -493,13 +499,42 @@ describe('claude-proxy', () => {
     });
 
     test('shows an account at the threshold as blocked in the status', async () => {
-      await startProxy(respondFromPersonalAtUtilization({ 'anthropic-ratelimit-unified-7d-utilization': '0.98' }));
+      await startProxy(respondFromPersonalAtUtilization({ 'anthropic-ratelimit-unified-7d-utilization': '0.98' }), subscriptionAccountsYamlWithFailoverUtilization);
       storeBothTestGrants();
       await (await sendClaudeCodeRequest()).text();
       const status = await readApi('subscription-account-status');
       const personalStatus = status.subscriptionAccounts.find((statusAccount: any) => statusAccount.subscriptionAccountName === 'Personal');
       assert.equal(personalStatus.isBlocked, true);
       assert.equal(personalStatus.blockedUntil, null);
+      assert.equal(personalStatus.failoverUtilization, 0.98);
+    });
+
+    test('keeps an account at its failover utilization out of the plan', async () => {
+      await startProxy((receivedRequest, upstreamResponse) =>
+        sendRateLimitRejection(upstreamResponse, readSubscriptionAccountName(receivedRequest), fiveHourLimitRejectionHeaders),
+        subscriptionAccountsYaml.replace('colour: "#a1c63d" }', 'colour: "#a1c63d", failover_utilization: 0.98 }'),
+      );
+      storeBothTestGrants();
+      claudeProxyServer.subscriptionAccountStore.mergeUsageWindows(
+        'Work',
+        [{ usageWindowName: '7d', utilization: 0.98, resetsAt: new Date(Date.now() + 86400_000).toISOString() }],
+        new Date().toISOString(),
+      );
+      const proxyResponse = await sendClaudeCodeRequest();
+      assert.equal(proxyResponse.status, 429);
+      assert.equal((await proxyResponse.json() as any).error.message, 'Personal');
+      assert.deepEqual(readUpstreamSubscriptionAccountNames(), ['Personal']);
+    });
+
+    test('uses an account up to its limit when it has no failover utilization', async () => {
+      await startProxy(respondFromPersonalAtUtilization({ 'anthropic-ratelimit-unified-7d-utilization': '1.0' }));
+      storeBothTestGrants();
+      await (await sendClaudeCodeRequest()).text();
+      await (await sendClaudeCodeRequest()).text();
+      assert.deepEqual(readUpstreamSubscriptionAccountNames(), ['Personal', 'Personal']);
+      const personalStatus = findStatusAccount(await readApi('subscription-account-status'), 'Personal');
+      assert.equal(personalStatus.isBlocked, false);
+      assert.equal(personalStatus.failoverUtilization, 1);
     });
   });
 
@@ -521,7 +556,27 @@ describe('claude-proxy', () => {
     assert.deepEqual(readUpstreamSubscriptionAccountNames(), ['Personal', 'Work', 'Personal', 'Work']);
   });
 
-  test('returns the project\'s own rejection when every account is blocked', async () => {
+  test('uses another account\'s last capacity when the own account rejects', async () => {
+    await startProxy((receivedRequest, upstreamResponse) => {
+      if (receivedRequest.headers.authorization === personalAuthorization) sendRateLimitRejection(upstreamResponse, 'Personal', fiveHourLimitRejectionHeaders);
+      else sendStreamingMessage(upstreamResponse, 'Hello from Work');
+    });
+    storeBothTestGrants();
+    claudeProxyServer.subscriptionAccountStore.writeLimitBlock({
+      subscriptionAccountName: 'Work',
+      blockedModel: '',
+      rateLimitWindow: 'seven_day',
+      blockedUntil: new Date(Date.now() + 86400_000).toISOString(),
+    });
+
+    const proxyResponse = await sendClaudeCodeRequest();
+    assert.equal(proxyResponse.status, 200);
+    assert.equal(proxyResponse.headers.get('x-claude-proxy-route'), 'Work');
+    assert.match(await proxyResponse.text(), /from Work/);
+    assert.deepEqual(readUpstreamSubscriptionAccountNames(), ['Personal', 'Work']);
+  });
+
+  test('returns the project\'s own rejection when every planned account rejects', async () => {
     await startProxy((receivedRequest, upstreamResponse) =>
       sendRateLimitRejection(upstreamResponse, readSubscriptionAccountName(receivedRequest), weeklyLimitRejectionHeaders),
     );
@@ -529,18 +584,20 @@ describe('claude-proxy', () => {
 
     const firstResponse = await sendClaudeCodeRequest();
     assert.equal(firstResponse.status, 429);
-    assert.equal(firstResponse.headers.get('x-claude-proxy-route'), 'Work');
-    assert.equal((await firstResponse.json() as any).error.message, 'Work');
-    assert.equal((await readApi('proxied-requests'))[0].upstream_attempt_count, 2);
+    assert.equal(firstResponse.headers.get('x-claude-proxy-route'), 'Personal');
+    assert.equal((await firstResponse.json() as any).error.message, 'Personal');
+    const [firstRequestSummary] = await readApi('proxied-requests');
+    assert.equal(firstRequestSummary.upstream_attempt_count, 2);
+    assert.equal(firstRequestSummary.route_name, 'Personal');
+    assert.equal(firstRequestSummary.error_type, 'rate_limit_error');
+    const firstRequestDetail = await readApi(`proxied-requests/${firstRequestSummary.id}`);
+    assert.equal(JSON.parse(firstRequestDetail.response_body).error.message, 'Personal');
 
     const secondResponse = await sendClaudeCodeRequest();
     assert.equal(secondResponse.status, 429);
     assert.equal((await secondResponse.json() as any).error.message, 'Personal');
-    assert.deepEqual(readUpstreamSubscriptionAccountNames(), ['Personal', 'Work', 'Personal']);
-    const [secondRequestSummary] = await readApi('proxied-requests');
-    assert.equal(secondRequestSummary.upstream_attempt_count, 1);
-    assert.equal(secondRequestSummary.route_name, 'Personal');
-    assert.equal(secondRequestSummary.error_type, 'rate_limit_error');
+    assert.deepEqual(readUpstreamSubscriptionAccountNames(), ['Personal', 'Work', 'Personal', 'Work']);
+    assert.equal((await readApi('proxied-requests'))[0].upstream_attempt_count, 2);
   });
 
   test('forwards a 401, a 529 and a network error without failover', async () => {
@@ -954,9 +1011,15 @@ describe('claude-proxy', () => {
       assert.equal(findStatusAccount(await readApi('subscription-account-status'), 'Personal').weeklyUtilization, 0.5);
     });
 
-    test('reports the failover utilization of subscription_accounts.yml', async () => {
-      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}), `${subscriptionAccountsYaml}failover_utilization: 0.9\n`);
-      assert.equal((await readApi('subscription-account-status')).failoverUtilization, 0.9);
+    test('reports the failover utilization of each account', async () => {
+      await startProxy(
+        (_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}),
+        subscriptionAccountsYaml.replace('colour: "#a1c63d" }', 'colour: "#a1c63d", failover_utilization: 0.9 }'),
+      );
+      const status = await readApi('subscription-account-status');
+      assert.equal(findStatusAccount(status, 'Work').failoverUtilization, 0.9);
+      assert.equal(findStatusAccount(status, 'Personal').failoverUtilization, 1);
+      assert.equal(status.failoverUtilization, undefined);
     });
 
     test('lists the configuration errors of subscription_accounts.yml', async () => {

@@ -24,8 +24,8 @@ test('parses accounts, routes and the default account, and expands ~', () => {
   const config = parseSubscriptionAccountsConfig(exampleYaml, homeDirectory);
   assert.equal(config.projectRoutes[0].projectPathPattern, '/Users/example_user/Development/client*');
   assert.deepEqual(config.subscriptionAccounts, [
-    { name: 'Work', colour: '#a1c63d' },
-    { name: 'Personal', colour: '#ba8048' },
+    { name: 'Work', colour: '#a1c63d', failoverUtilization: 1 },
+    { name: 'Personal', colour: '#ba8048', failoverUtilization: 1 },
   ]);
   assert.equal(config.defaultSubscriptionAccountName, 'Personal');
 });
@@ -98,15 +98,39 @@ test('treats an empty file as no accounts', () => {
   assert.deepEqual(parseSubscriptionAccountsConfig(null, homeDirectory), emptySubscriptionAccountsConfig);
 });
 
-test('reads failover_utilization and defaults it to 0.98', () => {
-  assert.equal(parseSubscriptionAccountsConfig(exampleYaml, homeDirectory).failoverUtilization, 0.98);
-  assert.equal(parseSubscriptionAccountsConfig({ ...exampleYaml, failover_utilization: 0.9 }, homeDirectory).failoverUtilization, 0.9);
-  assert.equal(parseSubscriptionAccountsConfig({ ...exampleYaml, failover_utilization: 1 }, homeDirectory).failoverUtilization, 1);
-  assert.equal(emptySubscriptionAccountsConfig.failoverUtilization, 0.98);
+test('reads failover_utilization on each account and defaults it to 1', () => {
+  const config = parseSubscriptionAccountsConfig(
+    {
+      ...exampleYaml,
+      subscription_accounts: [
+        { name: 'Work', colour: '#a1c63d', failover_utilization: 0.98 },
+        { name: 'Personal', colour: '#ba8048' },
+      ],
+    },
+    homeDirectory,
+  );
+  assert.deepEqual(config.subscriptionAccounts, [
+    { name: 'Work', colour: '#a1c63d', failoverUtilization: 0.98 },
+    { name: 'Personal', colour: '#ba8048', failoverUtilization: 1 },
+  ]);
+});
+
+test('rejects a per-account failover_utilization outside the range', () => {
   for (const invalidValue of [1.5, 0, -0.1, '0.9']) {
     assert.throws(
-      () => parseSubscriptionAccountsConfig({ ...exampleYaml, failover_utilization: invalidValue }, homeDirectory),
-      /failover_utilization must be a number above 0 and at most 1/,
+      () =>
+        parseSubscriptionAccountsConfig(
+          { subscription_accounts: [{ name: 'Work', colour: '#a1c63d', failover_utilization: invalidValue }] },
+          homeDirectory,
+        ),
+      /subscription_accounts\[0\]\.failover_utilization must be a number above 0 and at most 1/,
     );
   }
+});
+
+test('rejects a top-level failover_utilization and says to move it onto the account', () => {
+  assert.throws(
+    () => parseSubscriptionAccountsConfig({ ...exampleYaml, failover_utilization: 0.98 }, homeDirectory),
+    /failover_utilization is no longer a top-level key\. Move it onto each entry of subscription_accounts/,
+  );
 });

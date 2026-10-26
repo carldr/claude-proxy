@@ -23,6 +23,15 @@ type UpstreamTarget =
   | { routeKind: 'subscription' }
   | { routeKind: 'passthrough' };
 
+/** An upstream response that the proxy forwards to the client, either as it arrives or after a later route also rejects. */
+interface UpstreamResponseToForward {
+  routeKind: RouteKind;
+  routeName: string;
+  statusCode: number;
+  headers: IncomingHttpHeaders;
+  responseBody: AsyncIterable<Buffer> | Iterable<Buffer>;
+}
+
 export interface ProxyRequestHandlerDependencies {
   requestDatabase: RequestDatabase;
   subscriptionAccountRouter: SubscriptionAccountRouter;
@@ -47,6 +56,7 @@ const responseHeadersNotForwarded =new Set(['connection', 'keep-alive', 'transfe
  * Subscription (OAuth) requests to `/v1/messages` follow the plan of `SubscriptionAccountRouter`. The proxy moves to the
  * next subscription account when an account rejects the request for a 5-hour, weekly or per-model weekly limit.
  * The proxy can retry only before it sends anything to the client, and failover responses are never streamed.
+ * When every route rejects, the client gets the rejection of the project's own account, if the plan has that account.
  */
 export async function handleProxyRequest(
   clientRequest: IncomingMessage,
@@ -96,6 +106,35 @@ export async function handleProxyRequest(
       ? plannedRoutes.map((plannedRoute) => ({ routeKind: 'subscription_account', plannedRoute }))
       : [clientAuthKind === 'oauth' ? { routeKind: 'subscription' } : { routeKind: 'passthrough' }];
 
+  const forwardAndCompleteRequest = async (upstreamResponseToForward: UpstreamResponseToForward) => {
+    const { routeKind, routeName, statusCode, headers } = upstreamResponseToForward;
+    await forwardUpstreamResponse(upstreamResponseToForward, clientResponse, abortController.signal).then(
+      (forwardedResponse) => {
+        const completedRequest = summariseForwardedResponse(
+          forwardedResponse,
+          requestContext.model,
+          dependencies.readModelPricingTable(),
+        );
+        completeRecordedRequest({
+          ...emptyCompletedRequest(startedAtMs, routeKind, routeName, statusCode, completedRequest.errorType),
+          ...completedRequest,
+          responseHeadersJson: JSON.stringify(headers),
+        });
+      },
+      (error: Error) => {
+        const errorType = abortController.signal.aborted ? 'client_aborted' : 'upstream_stream_error';
+        console.error(`Proxied request ${proxiedRequestId} failed while streaming: ${error.message}`);
+        completeRecordedRequest({
+          ...emptyCompletedRequest(startedAtMs, routeKind, routeName, statusCode, errorType),
+          responseHeadersJson: JSON.stringify(headers),
+        });
+        clientResponse.destroy();
+      },
+    );
+  };
+
+  // The proxy holds the rejection of the project's own account, and forwards it when the last route also rejects.
+  let projectSubscriptionAccountRejection: UpstreamResponseToForward | null = null;
   for (const [targetIndex, upstreamTarget] of upstreamTargets.entries()) {
     const { routeKind, routeName } = describeUpstreamTarget(upstreamTarget);
     const upstreamUrl = new URL(`${dependencies.anthropicBaseUrl}${requestUrl.pathname}${requestUrl.search}`);
@@ -148,39 +187,30 @@ export async function handleProxyRequest(
       shouldTryNextTarget = rateLimit.rejection !== null;
     }
 
-    if (shouldTryNextTarget && targetIndex < upstreamTargets.length - 1) {
-      const errorBody = await readIncomingBody(upstreamResponse).then(
-        (responseBody) => responseBody.toString('utf8'),
-        (error: Error) => error.message,
-      );
-      recordAttempt(statusCode, errorBody);
-      continue;
+    const isLastTarget = targetIndex === upstreamTargets.length - 1;
+    if (shouldTryNextTarget && (!isLastTarget || projectSubscriptionAccountRejection !== null)) {
+      const rejectedResponseBody = await readIncomingBody(upstreamResponse).catch((error: Error) => error);
+      recordAttempt(statusCode, rejectedResponseBody instanceof Error ? rejectedResponseBody.message : rejectedResponseBody.toString('utf8'));
+      if (
+        upstreamTarget.routeKind === 'subscription_account' &&
+        upstreamTarget.plannedRoute.isProjectSubscriptionAccount &&
+        !(rejectedResponseBody instanceof Error)
+      ) {
+        projectSubscriptionAccountRejection = {
+          routeKind,
+          routeName,
+          statusCode,
+          headers: upstreamResponse.headers,
+          responseBody: [rejectedResponseBody],
+        };
+      }
+      if (!isLastTarget) continue;
+      await forwardAndCompleteRequest(projectSubscriptionAccountRejection!);
+      return;
     }
 
     recordAttempt(statusCode, null);
-    await forwardUpstreamResponse(upstreamResponse, clientResponse, routeName, abortController.signal).then(
-      (forwardedResponse) => {
-        const completedRequest = summariseForwardedResponse(
-          forwardedResponse,
-          requestContext.model,
-          dependencies.readModelPricingTable(),
-        );
-        completeRecordedRequest({
-          ...emptyCompletedRequest(startedAtMs, routeKind, routeName, statusCode, completedRequest.errorType),
-          ...completedRequest,
-          responseHeadersJson: JSON.stringify(upstreamResponse.headers),
-        });
-      },
-      (error: Error) => {
-        const errorType = abortController.signal.aborted ? 'client_aborted' : 'upstream_stream_error';
-        console.error(`Proxied request ${proxiedRequestId} failed while streaming: ${error.message}`);
-        completeRecordedRequest({
-          ...emptyCompletedRequest(startedAtMs, routeKind, routeName, statusCode, errorType),
-          responseHeadersJson: JSON.stringify(upstreamResponse.headers),
-        });
-        clientResponse.destroy();
-      },
-    );
+    await forwardAndCompleteRequest({ routeKind, routeName, statusCode, headers: upstreamResponse.headers, responseBody: upstreamResponse });
     return;
   }
 }
@@ -217,24 +247,24 @@ interface ForwardedResponse {
 
 /** Copies the upstream response to the client chunk by chunk, and keeps a copy for the request record. */
 async function forwardUpstreamResponse(
-  upstreamResponse: IncomingMessage,
+  upstreamResponseToForward: UpstreamResponseToForward,
   clientResponse: ServerResponse,
-  routeName: string,
   abortSignal: AbortSignal,
 ): Promise<ForwardedResponse> {
+  const { routeName, statusCode, headers, responseBody } = upstreamResponseToForward;
   const forwardedHeaders: OutgoingHttpHeaders = { 'x-claude-proxy-route': routeName };
-  for (const [headerName, headerValue] of Object.entries(upstreamResponse.headers)) {
+  for (const [headerName, headerValue] of Object.entries(headers)) {
     if (!responseHeadersNotForwarded.has(headerName) && headerValue !== undefined) forwardedHeaders[headerName] = headerValue;
   }
-  clientResponse.writeHead(upstreamResponse.statusCode ?? 502, forwardedHeaders);
+  clientResponse.writeHead(statusCode, forwardedHeaders);
 
-  const isEventStream = String(upstreamResponse.headers['content-type'] ?? '').includes('text/event-stream');
+  const isEventStream = String(headers['content-type'] ?? '').includes('text/event-stream');
   const streamAssembler = isEventStream ? new AnthropicMessageStreamAssembler() : null;
   const bodyChunks: Buffer[] = [];
-  for await (const responseChunk of upstreamResponse) {
+  for await (const responseChunk of responseBody) {
     if (abortSignal.aborted) throw new Error('Client closed the connection');
-    if (streamAssembler) streamAssembler.pushChunk(responseChunk as Buffer);
-    else bodyChunks.push(responseChunk as Buffer);
+    if (streamAssembler) streamAssembler.pushChunk(responseChunk);
+    else bodyChunks.push(responseChunk);
     if (!clientResponse.write(responseChunk)) await once(clientResponse, 'drain', { signal: abortSignal });
   }
   clientResponse.end();

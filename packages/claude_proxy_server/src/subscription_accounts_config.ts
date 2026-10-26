@@ -3,6 +3,11 @@ import path from 'node:path';
 export interface SubscriptionAccount {
   name: string;
   colour: string;
+  /**
+   * The proxy avoids this subscription account at or above this utilization of its 5-hour or weekly window.
+   * The default is 1, so the proxy uses the account until the account rejects a request.
+   */
+  failoverUtilization: number;
 }
 
 export interface ProjectRoute {
@@ -14,17 +19,14 @@ export interface SubscriptionAccountsConfig {
   subscriptionAccounts: SubscriptionAccount[];
   projectRoutes: ProjectRoute[];
   defaultSubscriptionAccountName: string | null;
-  /** A subscription account at or above this utilization of its 5-hour or weekly window is avoided before it rejects a request. */
-  failoverUtilization: number;
 }
 
-const defaultFailoverUtilization = 0.98;
+const defaultFailoverUtilization = 1;
 
 export const emptySubscriptionAccountsConfig: SubscriptionAccountsConfig = {
   subscriptionAccounts: [],
   projectRoutes: [],
   defaultSubscriptionAccountName: null,
-  failoverUtilization: defaultFailoverUtilization,
 };
 
 /** Validates the parsed contents of `subscription_accounts.yml`. A leading `~` in a pattern becomes `homeDirectory`. */
@@ -36,6 +38,12 @@ export function parseSubscriptionAccountsConfig(yamlValue: unknown, homeDirector
     default_subscription_account?: unknown;
     failover_utilization?: unknown;
   };
+
+  if (yamlObject.failover_utilization !== undefined) {
+    throw new Error(
+      'failover_utilization is no longer a top-level key. Move it onto each entry of subscription_accounts that needs it',
+    );
+  }
 
   const readEntries = (listName: string, listValue: unknown): Record<string, unknown>[] => {
     if (listValue === null || listValue === undefined) return [];
@@ -53,9 +61,18 @@ export function parseSubscriptionAccountsConfig(yamlValue: unknown, homeDirector
   const subscriptionAccounts = readEntries('subscription_accounts', yamlObject.subscription_accounts).map(
     (accountEntry, accountIndex): SubscriptionAccount => {
       const entryPath = `subscription_accounts[${accountIndex}]`;
+      const failoverUtilizationValue = accountEntry?.failover_utilization;
+      if (
+        failoverUtilizationValue !== null &&
+        failoverUtilizationValue !== undefined &&
+        (typeof failoverUtilizationValue !== 'number' || !(failoverUtilizationValue > 0 && failoverUtilizationValue <= 1))
+      ) {
+        throw new Error(`${entryPath}.failover_utilization must be a number above 0 and at most 1`);
+      }
       return {
         name: readRequiredString(accountEntry, entryPath, 'name'),
         colour: readRequiredString(accountEntry, entryPath, 'colour'),
+        failoverUtilization: typeof failoverUtilizationValue === 'number' ? failoverUtilizationValue : defaultFailoverUtilization,
       };
     },
   );
@@ -97,16 +114,7 @@ export function parseSubscriptionAccountsConfig(yamlValue: unknown, homeDirector
     }
   }
 
-  let failoverUtilization = defaultFailoverUtilization;
-  if (yamlObject.failover_utilization !== null && yamlObject.failover_utilization !== undefined) {
-    const failoverUtilizationValue = yamlObject.failover_utilization;
-    if (typeof failoverUtilizationValue !== 'number' || !(failoverUtilizationValue > 0 && failoverUtilizationValue <= 1)) {
-      throw new Error('failover_utilization must be a number above 0 and at most 1');
-    }
-    failoverUtilization = failoverUtilizationValue;
-  }
-
-  return { subscriptionAccounts, projectRoutes, defaultSubscriptionAccountName, failoverUtilization };
+  return { subscriptionAccounts, projectRoutes, defaultSubscriptionAccountName };
 }
 
 /**
