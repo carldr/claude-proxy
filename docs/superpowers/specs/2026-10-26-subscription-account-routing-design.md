@@ -2,22 +2,22 @@
 
 ## Intent
 
-the user has two Claude subscriptions:
+The user has two Claude subscriptions:
 
-- **Work**, paid for by a client. Claude Code is logged in to this account. Its login email is `person@example.com`, so do not name it after the email.
+- **Work**, paid for by a client. Claude Code is logged in to this account.
 - **Personal**, paid for by the user's own company. The user subscribes to it once this design is approved.
 
-Today the user does all his work on Work, and he hits the weekly limit again and again. With the work split by project, he expects to hit neither limit. When one account does hit a limit, its projects move to the other account without interruption.
+Today the user does all their work on Work, and hits the weekly limit again and again. With the work split by project, the user expects to hit neither limit. When one account does hit a limit, its projects move to the other account without interruption.
 
 The proxy already fails over from the subscription to API keys. That failover goes away. Anthropic's monthly API credits do not apply to Claude Code, so the API keys are of no use.
 
-Both accounts are individual Max plans, with different emails. Extra usage (overage) is off on both. If the user turns overage on later, an account that uses overage does not fail over. Overage only matters because with it on, an account no longer rejects at its limit.
+Both accounts are on the same plan tier, with different emails. Extra usage (overage) is off on both. If the user turns overage on later, an account that uses overage does not fail over. Overage only matters because with it on, an account no longer rejects at its limit.
 
 ## Goals
 
 1. Send each Claude Code request to the account that owns its project, chosen by glob patterns on the project directory.
 2. Fail over to the other account when an account rejects a request for its 5-hour or weekly limit. Do this before any byte reaches Claude Code, so Claude Code sees a normal response.
-3. Keep Remote Control, `/usage`, telemetry and every other non-message call on the account that Claude Code is logged in to. The user wants all Remote Control sessions under one account on his phone.
+3. Keep Remote Control, `/usage`, telemetry and every other non-message call on the account that Claude Code is logged in to. The user wants all Remote Control sessions under one account on the user's phone.
 4. Show each account's usage at a glance in the menu bar, and in detail in the web UI.
 
 ## Non-goals
@@ -39,7 +39,7 @@ These questions were settled before the design:
 | Question | Answer | Evidence |
 | --- | --- | --- |
 | Does the server reject a `metadata.user_id` whose `account_uuid` does not match the token? | No. | Tested on 2026-10-26: a random `account_uuid` returned 200, and the usage counted against the token's account. |
-| Does a login by the proxy give a grant that is independent of Claude Code's grant? | Yes. | the user logs in on several machines at once. claude-swap issue #107 runs the same PKCE flow for each account it adds. |
+| Does a login by the proxy give a grant that is independent of Claude Code's grant? | Yes. | The user logs in on several machines at once. claude-swap issue #107 runs the same PKCE flow for each account it adds. |
 | Does Remote Control work when messages use a different account's token? | Yes. | claude-swap issue #198 measured the reverse split: Remote Control on one account and inference on another, in one session. |
 
 The spike scripts are in the scratchpad, not in the repository. The OAuth constants below come from the Claude Code 2.1.310 binary.

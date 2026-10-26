@@ -433,7 +433,7 @@
 
 - [ ] **Step 3: Commit** `git commit -m "Describe subscription account routing in the README and CLAUDE.md"`
 
-- [ ] **Step 4: Hand over to the user for the end-to-end check.** These steps need his browser logins and his second subscription:
+- [ ] **Step 4: Hand over to the user for the end-to-end check.** These steps need the user's browser logins and second subscription:
   1. Run `launchctl kickstart -k gui/$(id -u)/local.claude-proxy.server`, and open `http://127.0.0.1:4100/_proxy/`.
   2. Log in to Work, then Personal, each in a browser signed in to that account.
   3. Run `claude` in `~/Development/client_project` and in this repository, and check the Route column shows Work and Personal.
