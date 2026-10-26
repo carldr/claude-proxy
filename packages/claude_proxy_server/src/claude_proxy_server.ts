@@ -68,7 +68,9 @@ function isLocalRequest(clientRequest: IncomingMessage, httpServer: Server): boo
 
 /** Creates the proxy server. The caller starts it with `httpServer.listen`. */
 export function createClaudeProxyServer(options: ClaudeProxyServerOptions): ClaudeProxyServer {
-  fs.mkdirSync(options.claudeProxyDirectory, { recursive: true });
+  // `requests.sqlite` holds the refresh tokens of the subscription accounts, so only the user can read the directory.
+  fs.mkdirSync(options.claudeProxyDirectory, { recursive: true, mode: 0o700 });
+  fs.chmodSync(options.claudeProxyDirectory, 0o700);
   for (const configFileName of ['subscription_accounts.yml', 'pricing.yml']) {
     const configFilePath = path.join(options.claudeProxyDirectory, configFileName);
     if (!fs.existsSync(configFilePath)) fs.copyFileSync(path.join(defaultConfigDirectory, configFileName), configFilePath);
@@ -92,6 +94,10 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
   const requestDatabase = new RequestDatabase(path.join(options.claudeProxyDirectory, 'requests.sqlite'));
   requestDatabase.markUnfinishedRequestsInterrupted();
   const subscriptionAccountStore = new SubscriptionAccountStore(path.join(options.claudeProxyDirectory, 'requests.sqlite'));
+  // SQLite creates the database, WAL and shared-memory files with the default mode. The proxy makes them private.
+  for (const fileName of fs.readdirSync(options.claudeProxyDirectory)) {
+    if (fileName.startsWith('requests.sqlite')) fs.chmodSync(path.join(options.claudeProxyDirectory, fileName), 0o600);
+  }
   const readSubscriptionAccountsConfig = () => subscriptionAccountsConfigFile.read().config;
   // The router and the usage monitor share one refresher, so that one refresh at a time runs for each grant.
   const subscriptionAccountGrantRefresher = new SubscriptionAccountGrantRefresher(subscriptionAccountStore, options.oauthEndpoints);
