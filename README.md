@@ -185,14 +185,14 @@ An account without a live grant sends Claude Code's own token unchanged. The web
 
 Open `http://127.0.0.1:4100/_proxy/`.
 
-- The top panel shows each subscription account with its name, email address and colour. It has a usage bar with the time to reset for the 5-hour window, the weekly window and each model window. It shows whether the proxy avoids the account, and until when. It has the **Log in** button, and it lists configuration errors.
+- The top panel shows each subscription account with its name, email address and colour. It has a usage bar with the time to reset for the 5-hour window, the weekly window and each model window. It shows whether the proxy avoids the account or tries it last after a rejection, and until when. It has the **Log in** button, and it lists configuration errors.
 - **Requests** lists every request. You can filter by project, model, route, status, date and session. The Route column shows the subscription account that served the request. A failover shows as two attempts. The search box finds text in your prompts, Claude's replies, tool calls and tool output. The filter bar shows the estimated cost of the matching requests: in total, in the last 30 days and in the last 24 hours. A grey project comes from an earlier request in the same session, because the request itself does not name its directory.
 - **Sessions** lists Claude Code sessions by project, each with its first prompt and a `claude --resume` command.
 - **Costs** shows estimated cost per day and subscription account. Subscription rows show what the same requests would cost at API prices.
 
 ## Menu bar
 
-The menu bar shows one pie per subscription account, in file order. Each pie has the colour of its account and shows the usage of its weekly window. A pie turns red when the proxy avoids the account: at the limit of its 5-hour or weekly window, or at its `failover_utilization` of either window. A pie is full and red when a weekly window blocks the account. When every pie is red, no account can take requests. A grey `!` means the proxy does not answer. The app reads the status once a minute.
+The menu bar shows one pie per subscription account, in file order. Each pie has the colour of its account and shows the usage of its weekly window. A pie turns red when the proxy tries the account last after a rejection for its 5-hour or weekly window, or avoids it at its `failover_utilization` of either window. A pie is full and red when a weekly window blocks the account. When every pie is red, every account has rejected requests or is at its threshold. A grey `!` means the proxy does not answer. The app reads the status once a minute.
 
 ## Commands
 

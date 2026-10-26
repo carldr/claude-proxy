@@ -84,5 +84,5 @@ Do not index the full request body.
 ## Web UI and menu bar
 
 - The web UI is served from `dist` under `/_proxy/`. `vite.config.ts` removes the Origin in the dev proxy only when it is the dev server's own.
-- The menu bar app has port 4100 fixed in `ClaudeProxyMenuBar.swift`. It reads `GET /_proxy/api/subscription-account-status` once a minute, and every 5 seconds while the proxy does not answer. It draws one weekly usage pie per account, and the pie turns red when the account is blocked or at its `failover_utilization`.
+- The menu bar app has port 4100 fixed in `ClaudeProxyMenuBar.swift`. It reads `GET /_proxy/api/subscription-account-status` once a minute, and every 5 seconds while the proxy does not answer. It draws one weekly usage pie per account, and the pie turns red when a rejection blocks the account, so the proxy tries it last, or when the account is at its `failover_utilization`.
 - `launchd/install_launchd_agents.sh` stores the absolute `node` path in the agent plist. Run the script again after a Node.js upgrade.
