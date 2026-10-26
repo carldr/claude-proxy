@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-claude-proxy is a local proxy for Claude Code on `127.0.0.1:4100`. It records `/v1/messages`, `/v1/messages/count_tokens`, `/v1/models` and `/api/hello` in SQLite, and forwards every other path unrecorded. In auto mode it sends subscription traffic to API keys when the subscription refuses a request for the weekly limit. `README.md` describes the behaviour for users.
+claude-proxy is a local proxy for Claude Code on `127.0.0.1:4100`. It records `/v1/messages`, `/v1/messages/count_tokens`, `/v1/models` and `/api/hello` in SQLite, and forwards every other path unrecorded. It sends each project's `/v1/messages` requests to one of several Claude subscription accounts, and moves a request to another account when an account is at a limit. `README.md` describes the behaviour for users.
 
 ## Commands
 
@@ -47,16 +47,14 @@ Do not change the setup back to `ANTHROPIC_BASE_URL`. Claude Code turns off Remo
 `handleProxyRequest` does the following:
 
 1. It classifies the client auth. `Authorization: Bearer` is a subscription OAuth token, and `x-api-key` is passthrough.
-2. Only OAuth requests to `/v1/messages*` follow `RoutingState.planUpstreamRoutes()`. All other requests go to `api.anthropic.com` unchanged.
-3. It tries the planned routes in order, and moves to the next route in two cases only:
-   - `readSubscriptionWeeklyRateLimit` reports a 429 for a `seven_day*` window;
-   - an API key returns 401.
+2. Only OAuth requests to `/v1/messages*` follow `SubscriptionAccountRouter.planRoutes()`. All other requests go to `api.anthropic.com` unchanged, with Claude Code's own token.
+3. `planRoutes` puts the project's own subscription account first, then the other accounts in file order. The project comes from `RequestDatabase.findProjectPath`, so an inherited project counts. An account is blocked after a rejection, or when its 5-hour or weekly utilization is at or above `failover_utilization`. A blocked account is left out of the plan, except the project's own account, which goes last. An account without a live grant is not a failover target.
+4. The handler tries the planned routes in order. It moves to the next route only when `readSubscriptionRateLimit` reports a 429 that rejects the request for the 5-hour window or for a weekly window. Failover happens before any byte reaches the client. The response of the last route is always forwarded.
+5. For a route with a live grant, `buildUpstreamHeaders` replaces the `authorization` header with the access token of the grant and changes nothing else. A route without a live grant keeps Claude Code's token. `forwardUpstreamResponse` streams the response to the client. `AnthropicMessageStreamAssembler` rebuilds the full message from the SSE events for the database.
 
-   Failover happens before any byte reaches the client. The response of the last route is always forwarded.
-4. For an API key route, `buildUpstreamHeaders` removes `authorization` and the `oauth-*` beta flags, and sets `x-api-key`.
-5. `forwardUpstreamResponse` streams the response to the client. `AnthropicMessageStreamAssembler` rebuilds the full message from the SSE events for the database.
+`~/.claude-proxy/subscription_accounts.yml` lists the accounts, the project routes, the default account and `failover_utilization` (default 0.98). `YamlConfigFile` reads it again at each change. After a parse or validation error, or when the file disappears, it keeps the last valid configuration and reports the error to the web UI. A file that is broken at start gives an empty configuration, so there is no routing.
 
-`RoutingState` keeps the mode, the selected key and the weekly usage in the `proxy_settings` table. Every subscription response updates the weekly usage from its headers. `SubscriptionUsageMonitor` polls `/api/oauth/usage` every 5 minutes, but only while the limit is reached. It uses the last OAuth token that passed through the proxy.
+`SubscriptionAccountLoginHandler` logs in an account from the web UI with OAuth PKCE and the redirect URI `http://localhost:<proxy port>/callback`. `SubscriptionAccountStore` keeps the grants, the usage windows and the limit blocks in `requests.sqlite`. The proxy never reads, copies or refreshes Claude Code's own grant. `SubscriptionAccountUsageMonitor` polls `/api/oauth/usage` with each live grant every 5 minutes. Every routed response updates the usage of its account from its headers. A rejection by a per-model weekly window blocks only that model.
 
 ## Facts checked against real Claude Code traffic
 
@@ -64,6 +62,8 @@ Do not change the setup back to `ANTHROPIC_BASE_URL`. Claude Code turns off Remo
 - Remote Control uses plain HTTPS to `api.anthropic.com` (`/v1/environments/*`, `/v1/code/sessions/*`), with no WebSocket upgrade.
 - On `api.anthropic.com`, Claude Code also calls paths outside `/v1/` and `/api/`, such as `/mcp-registry/v0/servers`.
 
+- A `/v1/messages` request whose `metadata.user_id` names a different `account_uuid` than the account of the token is accepted (tested 2026-10-26). The usage counts against the account of the token.
+- Refreshing an OAuth grant revokes the previous access token of that grant at once (claude-swap issue #381). The proxy therefore never refreshes Claude Code's grant.
 - `anthropic-ratelimit-unified-7d-utilization` is a fraction from 0 to 1, with two decimals. A value of 1.00 can still leave room before the subscription rejects requests. `anthropic-ratelimit-unified-7d-reset` is in epoch seconds.
 - `/api/oauth/usage` returns `seven_day.utilization` as a percentage and `seven_day.resets_at` as ISO 8601. The endpoint is undocumented.
 - Claude Code sends the session ID in the `x-claude-code-session-id` header. It also sends the ID in `metadata.user_id`, which is a JSON string.
@@ -84,5 +84,5 @@ Do not index the full request body.
 ## Web UI and menu bar
 
 - The web UI is served from `dist` under `/_proxy/`. `vite.config.ts` removes the Origin in the dev proxy only when it is the dev server's own.
-- The menu bar app has port 4100 fixed in `ClaudeProxyMenuBar.swift`. It reads `GET /_proxy/api/routing-status` once a minute, and every 5 seconds while the proxy does not answer.
+- The menu bar app has port 4100 fixed in `ClaudeProxyMenuBar.swift`. It reads `GET /_proxy/api/subscription-account-status` once a minute, and every 5 seconds while the proxy does not answer. It draws one weekly usage pie per account, and the pie turns red when the account is blocked or at `failover_utilization`.
 - `launchd/install_launchd_agents.sh` stores the absolute `node` path in the agent plist. Run the script again after a Node.js upgrade.
