@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ProxiedRequestFilters, RequestDatabase } from './request_database.ts';
+import type { SubscriptionAccountLoginHandler } from './subscription_account_login_handler.ts';
 import type { SubscriptionAccountStore, SubscriptionAccountUsageWindow } from './subscription_account_store.ts';
 import type { SubscriptionAccountUsageMonitor } from './subscription_account_usage_monitor.ts';
 import { isSubscriptionAccountAboveFailoverUtilization } from './subscription_account_router.ts';
@@ -15,6 +16,7 @@ export interface WebApiHandlerDependencies {
   readConfigErrors: () => string[];
   subscriptionAccountStore: SubscriptionAccountStore;
   subscriptionAccountUsageMonitor: SubscriptionAccountUsageMonitor;
+  subscriptionAccountLoginHandler: SubscriptionAccountLoginHandler;
   readSubscriptionAccountsConfig: () => SubscriptionAccountsConfig;
   claudeCodeProjectsDirectory: string;
 }
@@ -145,6 +147,15 @@ export async function handleWebApiRequest(
     if (clientRequest.method === 'POST' && apiPath === 'subscription-account-usage-check') {
       const usageCheckErrors = await dependencies.subscriptionAccountUsageMonitor.checkAllSubscriptionAccountUsage();
       return sendJson(clientResponse, 200, { ...buildSubscriptionAccountStatus(dependencies), usageCheckErrors });
+    }
+
+    const loginSubscriptionAccountNameMatch = /^subscription-accounts\/([^/]+)\/login$/.exec(apiPath);
+    if (clientRequest.method === 'POST' && loginSubscriptionAccountNameMatch) {
+      return sendJson(
+        clientResponse,
+        200,
+        dependencies.subscriptionAccountLoginHandler.startLogin(decodeURIComponent(loginSubscriptionAccountNameMatch[1])),
+      );
     }
 
     return sendJson(clientResponse, 404, { error: `No API endpoint ${clientRequest.method} ${requestUrl.pathname}` });

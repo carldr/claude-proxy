@@ -185,8 +185,10 @@ describe('claude-proxy', () => {
   let claudeProxyServer: ClaudeProxyServer;
   let claudeProxyBaseUrl: string;
   let anthropicUpstreamBaseUrl: string;
+  let respondAsTokenServer: FakeUpstreamResponder;
 
   beforeEach(() => {
+    respondAsTokenServer = (_, tokenResponse) => sendJsonResponse(tokenResponse, 500, { error: 'The tests store grants that need no refresh' });
     claudeProxyDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-proxy-test-'));
     receivedRequests = [];
     fakeUpstreamServers = [];
@@ -202,8 +204,8 @@ describe('claude-proxy', () => {
     const anthropicUpstream = await startFakeUpstream('anthropic', receivedRequests, respondAsAnthropic);
     fakeUpstreamServers.push(anthropicUpstream.server);
     anthropicUpstreamBaseUrl = anthropicUpstream.baseUrl;
-    const tokenServer = await startFakeUpstream('token_server', receivedRequests, (_, tokenResponse) =>
-      sendJsonResponse(tokenResponse, 500, { error: 'The tests store grants that need no refresh' }),
+    const tokenServer = await startFakeUpstream('token_server', receivedRequests, (receivedRequest, tokenResponse) =>
+      respondAsTokenServer(receivedRequest, tokenResponse),
     );
     fakeUpstreamServers.push(tokenServer.server);
     fs.writeFileSync(path.join(claudeProxyDirectory, 'subscription_accounts.yml'), subscriptionAccountsYamlText);
@@ -252,6 +254,10 @@ describe('claude-proxy', () => {
 
   async function readApi(apiPath: string) {
     return (await fetch(`${claudeProxyBaseUrl}/_proxy/api/${apiPath}`)).json() as Promise<any>;
+  }
+
+  function findStatusAccount(status: any, subscriptionAccountName: string) {
+    return status.subscriptionAccounts.find((statusAccount: any) => statusAccount.subscriptionAccountName === subscriptionAccountName);
   }
 
   function readUpstreamSubscriptionAccountNames() {
@@ -766,10 +772,6 @@ describe('claude-proxy', () => {
       };
     }
 
-    function findStatusAccount(status: any, subscriptionAccountName: string) {
-      return status.subscriptionAccounts.find((statusAccount: any) => statusAccount.subscriptionAccountName === subscriptionAccountName);
-    }
-
     test('polls each logged-in account with its own grant', async () => {
       await startProxy(respondWithWeeklyUsage({ [workAuthorization]: 93, [personalAuthorization]: 40 }));
       storeBothTestGrants();
@@ -877,6 +879,122 @@ describe('claude-proxy', () => {
       const status = await readApi('subscription-account-status');
       assert.ok(status.configErrors.length > 0);
       assert.match(status.configErrors[0], /Unknown/);
+    });
+  });
+
+  describe('subscription account login', () => {
+    function answerLoginWithIdentity(accountUuid: string, emailAddress: string) {
+      respondAsTokenServer = (_, tokenResponse) =>
+        sendJsonResponse(tokenResponse, 200, {
+          access_token: 'login-access-token',
+          refresh_token: 'login-refresh-token',
+          expires_in: 28800,
+          account: { uuid: accountUuid, email_address: emailAddress },
+          organization: { uuid: `${accountUuid}-organization` },
+        });
+    }
+
+    async function startLogin(subscriptionAccountName: string) {
+      const loginResponse = await fetch(`${claudeProxyBaseUrl}/_proxy/api/subscription-accounts/${subscriptionAccountName}/login`, { method: 'POST' });
+      return { loginResponse, loginBody: (await loginResponse.json()) as any };
+    }
+
+    function callCallback(callbackQuery: string) {
+      return fetch(`${claudeProxyBaseUrl}/callback?${callbackQuery}`, { redirect: 'manual' });
+    }
+
+    test('logs in an account through the loopback callback', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
+      answerLoginWithIdentity('person-account-uuid', 'person@example.com');
+
+      const { loginResponse, loginBody } = await startLogin('Personal');
+      assert.equal(loginResponse.status, 200);
+      const authorizeUrl = new URL(loginBody.authorizeUrl);
+      assert.equal(authorizeUrl.searchParams.get('redirect_uri'), `http://localhost:${new URL(claudeProxyBaseUrl).port}/callback`);
+      const callbackResponse = await callCallback(`code=the-code&state=${authorizeUrl.searchParams.get('state')}`);
+
+      assert.equal(callbackResponse.status, 302);
+      assert.equal(callbackResponse.headers.get('location'), '/_proxy/');
+      const storedGrant = claudeProxyServer.subscriptionAccountStore.readGrant('Personal');
+      assert.equal(storedGrant?.accessToken, 'login-access-token');
+      assert.equal(storedGrant?.refreshToken, 'login-refresh-token');
+      const personalStatus = findStatusAccount(await readApi('subscription-account-status'), 'Personal');
+      assert.equal(personalStatus.loginState, 'logged_in');
+      assert.equal(personalStatus.emailAddress, 'person@example.com');
+    });
+
+    test('replaces the grant when the same account logs in again', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
+      storeTestGrant('Personal', 'personal-token');
+      answerLoginWithIdentity('Personal-account-uuid', 'person@example.com');
+      const { loginBody } = await startLogin('Personal');
+      const callbackResponse = await callCallback(`code=the-code&state=${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
+      assert.equal(callbackResponse.status, 302);
+      assert.equal(claudeProxyServer.subscriptionAccountStore.readGrant('Personal')?.accessToken, 'login-access-token');
+    });
+
+    test('refuses a login whose account is stored under another name', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
+      storeTestGrant('Work', 'work-token');
+      respondAsTokenServer = (_, tokenResponse) =>
+        sendJsonResponse(tokenResponse, 200, {
+          access_token: 'login-access-token',
+          refresh_token: 'login-refresh-token',
+          expires_in: 28800,
+          account: { uuid: 'Work-account-uuid', email_address: 'work@example.com' },
+          organization: { uuid: 'Work-organization-uuid' },
+        });
+      const { loginBody } = await startLogin('Personal');
+      const callbackResponse = await callCallback(`code=the-code&state=${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
+
+      assert.equal(callbackResponse.status, 400);
+      assert.match(await callbackResponse.text(), /already logged in as Work/);
+      assert.equal(claudeProxyServer.subscriptionAccountStore.readGrant('Personal'), null);
+      assert.equal(claudeProxyServer.subscriptionAccountStore.readGrant('Work')?.accessToken, 'work-token');
+    });
+
+    test('rejects a callback with an unknown state', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
+      answerLoginWithIdentity('person-account-uuid', 'person@example.com');
+      const callbackResponse = await callCallback('code=the-code&state=unknown-state');
+      assert.equal(callbackResponse.status, 400);
+      assert.match(await callbackResponse.text(), /state/);
+      assert.equal(claudeProxyServer.subscriptionAccountStore.readGrant('Personal'), null);
+      assert.equal(receivedRequests.filter((receivedRequest) => receivedRequest.upstreamName === 'token_server').length, 0);
+    });
+
+    test('accepts a state once only', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
+      answerLoginWithIdentity('person-account-uuid', 'person@example.com');
+      const { loginBody } = await startLogin('Personal');
+      const callbackQuery = `code=the-code&state=${new URL(loginBody.authorizeUrl).searchParams.get('state')}`;
+      assert.equal((await callCallback(callbackQuery)).status, 302);
+      assert.equal((await callCallback(callbackQuery)).status, 400);
+    });
+
+    test('answers 400 with the token endpoint error when the code exchange fails', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
+      respondAsTokenServer = (_, tokenResponse) => sendJsonResponse(tokenResponse, 400, { error: 'invalid_grant' });
+      const { loginBody } = await startLogin('Personal');
+      const callbackResponse = await callCallback(`code=the-code&state=${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
+      assert.equal(callbackResponse.status, 400);
+      assert.match(await callbackResponse.text(), /invalid_grant/);
+      assert.equal(claudeProxyServer.subscriptionAccountStore.readGrant('Personal'), null);
+    });
+
+    test('rejects a callback that carries an error instead of a code', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
+      const { loginBody } = await startLogin('Personal');
+      const callbackResponse = await callCallback(`error=access_denied&state=${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
+      assert.equal(callbackResponse.status, 400);
+      assert.match(await callbackResponse.text(), /access_denied/);
+    });
+
+    test('rejects a login for an account that is not in subscription_accounts.yml', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
+      const { loginResponse, loginBody } = await startLogin('Unknown');
+      assert.equal(loginResponse.status, 400);
+      assert.match(loginBody.error, /Unknown/);
     });
   });
 });
