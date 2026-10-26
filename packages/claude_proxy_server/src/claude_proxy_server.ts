@@ -8,6 +8,7 @@ import { handleHttpsProxyConnect } from './https_proxy_connect_handler.ts';
 import { parseModelPricingConfig, type ModelPricingTable } from './model_pricing_config.ts';
 import { handleProxyRequest } from './proxy_request_handler.ts';
 import { RequestDatabase } from './request_database.ts';
+import { SubscriptionAccountLoginHandler, subscriptionAccountLoginCallbackPath } from './subscription_account_login_handler.ts';
 import { SubscriptionAccountGrantRefresher, type OAuthEndpoints } from './subscription_account_oauth.ts';
 import { SubscriptionAccountRouter } from './subscription_account_router.ts';
 import { SubscriptionAccountStore } from './subscription_account_store.ts';
@@ -106,6 +107,13 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
     options.anthropicBaseUrl,
   );
 
+  const subscriptionAccountLoginHandler = new SubscriptionAccountLoginHandler({
+    subscriptionAccountStore,
+    readSubscriptionAccountsConfig,
+    oauthEndpoints: options.oauthEndpoints,
+    readListeningPort: () => (httpServer.address() as AddressInfo).port,
+  });
+
   const proxyRequest = (clientRequest: IncomingMessage, clientResponse: ServerResponse) =>
     handleProxyRequest(clientRequest, clientResponse, {
       requestDatabase,
@@ -127,11 +135,14 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
         readConfigErrors,
         subscriptionAccountStore,
         subscriptionAccountUsageMonitor,
+        subscriptionAccountLoginHandler,
         readSubscriptionAccountsConfig,
         claudeCodeProjectsDirectory: options.claudeCodeProjectsDirectory,
       });
     } else if (requestPath.startsWith(webUiPathPrefix)) {
       handleWebUiStaticFileRequest(clientRequest, clientResponse, options.webUiDistDirectory);
+    } else if (clientRequest.method === 'GET' && new URL(requestPath, 'http://claude-proxy').pathname === subscriptionAccountLoginCallbackPath) {
+      await subscriptionAccountLoginHandler.handleCallbackRequest(clientRequest, clientResponse);
     } else if (clientRequest.method === 'GET' && (requestPath === '/' || requestPath === '/_proxy')) {
       clientResponse.writeHead(302, { location: webUiPathPrefix });
       clientResponse.end();
