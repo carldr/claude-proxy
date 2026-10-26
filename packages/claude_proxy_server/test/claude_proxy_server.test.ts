@@ -438,6 +438,35 @@ describe('claude-proxy', () => {
       );
     });
 
+    test('ignores a usage window whose reset time has passed', async () => {
+      await startProxy(respondFromPersonalAtUtilization({}));
+      storeBothTestGrants();
+      claudeProxyServer.subscriptionAccountStore.mergeUsageWindows(
+        'Personal',
+        [{ usageWindowName: '5h', utilization: 0.99, resetsAt: new Date(Date.now() - 60_000).toISOString() }],
+        new Date().toISOString(),
+      );
+      await (await sendClaudeCodeRequest()).text();
+      assert.deepEqual(readUpstreamSubscriptionAccountNames(), ['Personal']);
+      const status = await readApi('subscription-account-status');
+      assert.equal(status.subscriptionAccounts.find((statusAccount: any) => statusAccount.subscriptionAccountName === 'Personal').isBlocked, false);
+    });
+
+    test('returns the project\'s own account when every account is above the failover utilization', async () => {
+      await startProxy(respondFromPersonalAtUtilization({}));
+      storeBothTestGrants();
+      const resetsAt = new Date(Date.now() + 86400_000).toISOString();
+      for (const subscriptionAccountName of ['Work', 'Personal']) {
+        claudeProxyServer.subscriptionAccountStore.mergeUsageWindows(
+          subscriptionAccountName,
+          [{ usageWindowName: '7d', utilization: 0.99, resetsAt }],
+          new Date().toISOString(),
+        );
+      }
+      await (await sendClaudeCodeRequest()).text();
+      assert.deepEqual(readUpstreamSubscriptionAccountNames(), ['Personal']);
+    });
+
     test('shows an account at the threshold as blocked in the status', async () => {
       await startProxy(respondFromPersonalAtUtilization({ 'anthropic-ratelimit-unified-7d-utilization': '0.98' }));
       storeBothTestGrants();
