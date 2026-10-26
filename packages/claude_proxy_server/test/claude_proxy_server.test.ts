@@ -6,9 +6,9 @@ import type net from 'node:net';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, test } from 'node:test';
+import { afterEach, beforeEach, describe, mock, test } from 'node:test';
 import tls from 'node:tls';
-import { createClaudeProxyServer, type ClaudeProxyServer } from '../src/claude_proxy_server.ts';
+import { changeFileModeOrWarn, createClaudeProxyServer, type ClaudeProxyServer } from '../src/claude_proxy_server.ts';
 import { parseSubscriptionAccountUsageReport } from '../src/subscription_account_usage_monitor.ts';
 
 interface ReceivedUpstreamRequest {
@@ -152,6 +152,21 @@ function readSubscriptionAccountName(receivedRequest: ReceivedUpstreamRequest): 
       return String(receivedRequest.headers.authorization);
   }
 }
+
+test('logs one warning and does not throw when the mode of a file cannot change', () => {
+  const consoleErrorMock = mock.method(console, 'error', () => {});
+  try {
+    changeFileModeOrWarn('/other_user/requests.sqlite', 0o600, () => {
+      throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
+    });
+    assert.equal(consoleErrorMock.mock.callCount(), 1);
+    assert.deepEqual(consoleErrorMock.mock.calls[0]!.arguments, [
+      'claude-proxy could not set the mode of /other_user/requests.sqlite to 600: EPERM: operation not permitted',
+    ]);
+  } finally {
+    consoleErrorMock.mock.restore();
+  }
+});
 
 test('parses five_hour, seven_day and per-model windows from the usage report', () => {
   assert.deepEqual(
