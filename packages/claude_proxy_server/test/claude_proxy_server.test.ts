@@ -1181,6 +1181,20 @@ describe('claude-proxy', () => {
       assert.equal(personalStatus.emailAddress, 'person@example.com');
     });
 
+    test('polls the usage of an account right after it logs in', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, { seven_day: { utilization: 40, resets_at: null } }));
+      answerLoginWithIdentity('person-account-uuid', 'person-organization-uuid', 'person@example.com');
+      const { loginBody } = await startLogin('Personal');
+      await callCallback(`code=the-code&state=${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
+
+      for (let attempt = 0; attempt < 50 && findStatusAccount(await readApi('subscription-account-status'), 'Personal').weeklyUtilization === null; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      const usageRequest = receivedRequests.find((receivedRequest) => receivedRequest.path === '/api/oauth/usage');
+      assert.equal(usageRequest?.headers.authorization, 'Bearer login-access-token');
+      assert.equal(findStatusAccount(await readApi('subscription-account-status'), 'Personal').weeklyUtilization, 0.4);
+    });
+
     test('replaces the grant when the same account logs in again', async () => {
       await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
       storeTestGrant('Personal', 'personal-token');

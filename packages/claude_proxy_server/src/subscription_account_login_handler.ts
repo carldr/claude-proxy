@@ -22,6 +22,8 @@ export interface SubscriptionAccountLoginHandlerDependencies {
   readSubscriptionAccountsConfig: () => SubscriptionAccountsConfig;
   oauthEndpoints: OAuthEndpoints;
   readListeningPort: () => number;
+  /** Starts a usage poll of the account that logged in, so its usage shows before the next 5-minute poll. */
+  checkSubscriptionAccountUsageAfterLogin: (subscriptionAccountName: string) => void;
 }
 
 /** Starts logins of subscription accounts, and finishes them when the browser returns to the loopback callback. */
@@ -103,5 +105,6 @@ export class SubscriptionAccountLoginHandler {
     // The usage windows and the limit blocks describe the Claude account of the replaced grant.
     if (isReplacedGrantOfOtherIdentity) subscriptionAccountStore.deleteUsageWindowsAndLimitBlocks(grant.subscriptionAccountName);
     subscriptionAccountStore.writeGrant(grant);
+    this.dependencies.checkSubscriptionAccountUsageAfterLogin(grant.subscriptionAccountName);
   }
 }

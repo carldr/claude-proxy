@@ -160,6 +160,11 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
     readSubscriptionAccountsConfig,
     oauthEndpoints: options.oauthEndpoints,
     readListeningPort: () => (httpServer.address() as AddressInfo).port,
+    checkSubscriptionAccountUsageAfterLogin: (subscriptionAccountName) => {
+      subscriptionAccountUsageMonitor.checkSubscriptionAccountUsage(subscriptionAccountName).catch((error: Error) => {
+        console.error(`claude-proxy could not poll the usage of subscription account ${subscriptionAccountName} after its login: ${error.message}`);
+      });
+    },
   });
 
   const proxyRequest = (clientRequest: IncomingMessage, clientResponse: ServerResponse) =>
