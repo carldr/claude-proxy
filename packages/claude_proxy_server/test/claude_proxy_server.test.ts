@@ -592,6 +592,19 @@ describe('claude-proxy', () => {
     assert.equal((await readApi('proxied-requests'))[0].route_kind, 'subscription');
   });
 
+  test('keeps routing by the last valid subscription_accounts.yml after an edit breaks it', async () => {
+    await startProxy((_, upstreamResponse) => sendStreamingMessage(upstreamResponse, 'Hello'));
+    storeBothTestGrants();
+    await (await sendClaudeCodeRequest()).text();
+    const subscriptionAccountsYamlPath = path.join(claudeProxyDirectory, 'subscription_accounts.yml');
+    fs.writeFileSync(subscriptionAccountsYamlPath, subscriptionAccountsYaml.replace('subscription_account: Work }', 'subscription_account: Unknown }'));
+    const editTime = new Date(Date.now() + 60_000);
+    fs.utimesSync(subscriptionAccountsYamlPath, editTime, editTime);
+    await (await sendClaudeCodeRequest()).text();
+    assert.deepEqual(readUpstreamSubscriptionAccountNames(), ['Personal', 'Personal']);
+    assert.ok((await readApi('subscription-account-status')).configErrors.length > 0);
+  });
+
   test('leaves every non-message path untouched', async () => {
     await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
     storeBothTestGrants();
