@@ -245,6 +245,44 @@ test('returns the stored token that is still valid when the refresh fails transi
   });
 });
 
+test('sends no refresh for 30 seconds after a transient failure, and returns the stored token', async () => {
+  await withFakeTokenServer(answerJson(500, { error: 'server_error' }), async ({ endpoints, receivedRequests }) => {
+    await withStore(async (store) => {
+      store.writeGrant(personalGrant(Date.now() + 2 * 60_000));
+      const refresher = new SubscriptionAccountGrantRefresher(store, endpoints);
+      assert.equal(await refresher.readAccessToken('Personal'), 'old-access-token');
+      assert.equal(await refresher.readAccessToken('Personal'), 'old-access-token');
+      assert.equal(receivedRequests.length, 1);
+    });
+  });
+});
+
+test('returns null during the refresh pause when the stored token has expired', async () => {
+  await withFakeTokenServer(answerJson(500, { error: 'server_error' }), async ({ endpoints, receivedRequests }) => {
+    await withStore(async (store) => {
+      store.writeGrant(personalGrant(Date.now() - 1000));
+      const refresher = new SubscriptionAccountGrantRefresher(store, endpoints);
+      await assert.rejects(refresher.readAccessToken('Personal'));
+      assert.equal(await refresher.readAccessToken('Personal'), null);
+      assert.equal(receivedRequests.length, 1);
+    });
+  });
+});
+
+test('refreshes during the refresh pause when a login stored a new grant', async () => {
+  await withFakeTokenServer(answerJson(500, { error: 'server_error' }), async ({ endpoints, receivedRequests }) => {
+    await withStore(async (store) => {
+      store.writeGrant(personalGrant(Date.now() + 2 * 60_000));
+      const refresher = new SubscriptionAccountGrantRefresher(store, endpoints);
+      await refresher.readAccessToken('Personal');
+      store.writeGrant({ ...personalGrant(Date.now() + 2 * 60_000), accessToken: 'login-access-token', refreshToken: 'login-refresh-token' });
+      assert.equal(await refresher.readAccessToken('Personal'), 'login-access-token');
+      assert.equal(receivedRequests.length, 2);
+      assert.equal(receivedRequests[1]!.body.refresh_token, 'login-refresh-token');
+    });
+  });
+});
+
 test('drops the result of a refresh when a login stored a new grant while the refresh was in flight', async () => {
   let answerSlowRefresh!: () => void;
   const slowRefreshAnswerGate = new Promise<void>((resolve) => (answerSlowRefresh = resolve));

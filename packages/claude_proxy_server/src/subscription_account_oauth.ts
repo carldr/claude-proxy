@@ -16,6 +16,7 @@ const claudeCodeOAuthScopes =
   'org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload user:plugins';
 const tokenEndpointTimeoutMilliseconds = 30_000;
 const accessTokenRefreshMarginMilliseconds = 5 * 60_000;
+const refreshPauseAfterTransientFailureMilliseconds = 30_000;
 
 export interface PendingSubscriptionAccountLogin {
   subscriptionAccountName: string;
@@ -131,11 +132,14 @@ export async function exchangeSubscriptionAccountLoginCode(
  * Keeps the access token of each proxy-owned grant live.
  * A refresh rotates the refresh token, so two parallel refreshes of one grant would kill it.
  * The refresher therefore runs one refresh at a time for each subscription account.
+ * After a transient refresh failure, the refresher sends no refresh for that grant for 30 seconds.
  */
 export class SubscriptionAccountGrantRefresher {
   private readonly subscriptionAccountStore: SubscriptionAccountStore;
   private readonly endpoints: OAuthEndpoints;
   private readonly refreshesInFlight = new Map<string, Promise<string | null>>();
+  /** The refresh token of the grant whose refresh failed transiently, and the end of its pause, per subscription account. */
+  private readonly refreshPauses = new Map<string, { refreshToken: string; pausedUntilMs: number }>();
 
   constructor(subscriptionAccountStore: SubscriptionAccountStore, endpoints: OAuthEndpoints) {
     this.subscriptionAccountStore = subscriptionAccountStore;
@@ -149,6 +153,12 @@ export class SubscriptionAccountGrantRefresher {
     const grant = this.subscriptionAccountStore.readGrant(subscriptionAccountName);
     if (!grant || grant.isRefreshTokenRejected) return null;
     if (grant.accessTokenExpiresAt - Date.now() > accessTokenRefreshMarginMilliseconds) return grant.accessToken;
+    // A new login changes the refresh token, so the pause of the replaced grant does not apply to it.
+    const refreshPause = this.refreshPauses.get(subscriptionAccountName);
+    if (refreshPause && refreshPause.refreshToken === grant.refreshToken && Date.now() < refreshPause.pausedUntilMs) {
+      return grant.accessTokenExpiresAt > Date.now() ? grant.accessToken : null;
+    }
+    this.refreshPauses.delete(subscriptionAccountName);
     const refresh = this.refreshGrant(grant).finally(() => this.refreshesInFlight.delete(subscriptionAccountName));
     this.refreshesInFlight.set(subscriptionAccountName, refresh);
     return refresh;
@@ -168,6 +178,10 @@ export class SubscriptionAccountGrantRefresher {
         return this.readLiveAccessTokenOfStoredGrant(grant);
       }
       // A transient failure does not make the stored access token invalid. The refresher uses it until it expires.
+      this.refreshPauses.set(grant.subscriptionAccountName, {
+        refreshToken: grant.refreshToken,
+        pausedUntilMs: Date.now() + refreshPauseAfterTransientFailureMilliseconds,
+      });
       const liveAccessToken = this.readLiveAccessTokenOfStoredGrant(grant);
       if (liveAccessToken === null) throw error;
       console.error(
