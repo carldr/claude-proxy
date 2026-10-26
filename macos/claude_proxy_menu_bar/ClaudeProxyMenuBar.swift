@@ -1,30 +1,29 @@
 import AppKit
 import SwiftUI
 
-/// The fields of `GET /_proxy/api/routing-status` that the menu bar shows.
-struct RoutingStatus: Decodable {
-    struct RouteAppearance: Decodable {
-        let routeKind: String
-        let routeName: String
-        let letter: String
-        let colour: String
-    }
-
-    let routingMode: String
-    let activeRoute: RouteAppearance
-    let subscriptionWeeklyUtilization: Double?
-    let subscriptionWeeklyLimitReached: Bool
+/// The fields of one subscription account in `GET /_proxy/api/subscription-account-status` that the menu bar shows.
+struct SubscriptionAccountStatus: Decodable {
+    let subscriptionAccountName: String
+    let colour: String
+    let loginState: String
+    let weeklyUtilization: Double?
+    let isBlocked: Bool
+    let blockedUntil: String?
 }
 
-/// Reads the routing status from claude-proxy once a minute.
+struct SubscriptionAccountStatusResponse: Decodable {
+    let subscriptionAccounts: [SubscriptionAccountStatus]
+}
+
+/// Reads the subscription account status from claude-proxy once a minute.
 @MainActor
-final class RoutingStatusModel: ObservableObject {
+final class SubscriptionAccountStatusModel: ObservableObject {
     static let claudeProxyBaseUrl = URL(string: "http://127.0.0.1:4100")!
     static let refreshIntervalSeconds: TimeInterval = 60
     /// At login the app can start before the proxy listens, so a failed read is retried sooner than the normal refresh.
     static let retryAfterErrorSeconds: UInt64 = 5
 
-    @Published private(set) var routingStatus: RoutingStatus?
+    @Published private(set) var subscriptionAccounts: [SubscriptionAccountStatus]?
     @Published private(set) var loadError: String?
     private let urlSession = URLSession(configuration: .ephemeral)
     private var refreshTimer: Timer?
@@ -40,12 +39,13 @@ final class RoutingStatusModel: ObservableObject {
     func refresh() {
         Task {
             do {
-                let routingStatusUrl = Self.claudeProxyBaseUrl.appending(path: "_proxy/api/routing-status")
-                let (responseData, _) = try await urlSession.data(from: routingStatusUrl)
-                routingStatus = try JSONDecoder().decode(RoutingStatus.self, from: responseData)
+                let statusUrl = Self.claudeProxyBaseUrl.appending(path: "_proxy/api/subscription-account-status")
+                let (responseData, _) = try await urlSession.data(from: statusUrl)
+                subscriptionAccounts = try JSONDecoder().decode(SubscriptionAccountStatusResponse.self, from: responseData)
+                    .subscriptionAccounts
                 loadError = nil
             } catch {
-                routingStatus = nil
+                subscriptionAccounts = nil
                 loadError = error.localizedDescription
                 scheduleRetry()
             }
@@ -62,46 +62,72 @@ final class RoutingStatusModel: ObservableObject {
         }
     }
 
-    /// The dot in the menu bar: the active route's letter on its colour, or a grey "!" when the proxy does not answer.
+    /// One weekly usage pie per subscription account, or a grey "!" dot when the proxy does not answer.
     var menuBarImage: NSImage {
-        guard let activeRoute = routingStatus?.activeRoute else {
-            return makeRouteDotImage(letter: "!", colourHex: "#9aa3ae")
+        guard let subscriptionAccounts else {
+            return makeProxyUnreachableImage()
         }
-        return makeRouteDotImage(letter: activeRoute.letter, colourHex: activeRoute.colour)
+        return makeSubscriptionAccountPiesImage(subscriptionAccounts: subscriptionAccounts)
     }
 }
 
-let routingModeDescriptions = [
-    "auto": "Auto",
-    "force_subscription": "Subscription only",
-    "force_api_key": "API key only",
+let blockedUntilIsoFormatters: [ISO8601DateFormatter] = [
+    ISO8601DateFormatter(),
+    {
+        let fractionalSecondsFormatter = ISO8601DateFormatter()
+        fractionalSecondsFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractionalSecondsFormatter
+    }(),
 ]
 
-struct RoutingStatusMenu: View {
-    @ObservedObject var routingStatusModel: RoutingStatusModel
+/// Formats an ISO 8601 time as the local weekday and hour, for example "Tue 14:00".
+func formatBlockedUntil(_ blockedUntil: String) -> String {
+    guard let blockedUntilDate = blockedUntilIsoFormatters.lazy.compactMap({ $0.date(from: blockedUntil) }).first else {
+        return blockedUntil
+    }
+    let localTimeFormatter = DateFormatter()
+    localTimeFormatter.locale = Locale(identifier: "en_GB")
+    localTimeFormatter.dateFormat = "EEE HH:mm"
+    return localTimeFormatter.string(from: blockedUntilDate)
+}
+
+func describeSubscriptionAccount(_ subscriptionAccount: SubscriptionAccountStatus) -> String {
+    let name = subscriptionAccount.subscriptionAccountName
+    if subscriptionAccount.loginState == "login_required" {
+        return "\(name): log in from the web UI"
+    }
+    if subscriptionAccount.isBlocked {
+        if let blockedUntil = subscriptionAccount.blockedUntil {
+            return "\(name): blocked until \(formatBlockedUntil(blockedUntil))"
+        }
+        return "\(name): not used, at the failover limit"
+    }
+    if let weeklyUtilization = subscriptionAccount.weeklyUtilization {
+        return "\(name): \(Int((weeklyUtilization * 100).rounded()))% weekly"
+    }
+    return "\(name): no weekly usage known"
+}
+
+struct SubscriptionAccountStatusMenu: View {
+    @ObservedObject var subscriptionAccountStatusModel: SubscriptionAccountStatusModel
 
     var body: some View {
-        if let routingStatus = routingStatusModel.routingStatus {
-            Text("Route: \(routingStatus.activeRoute.routeKind == "subscription" ? "Subscription" : routingStatus.activeRoute.routeName)")
-            Text("Mode: \(routingModeDescriptions[routingStatus.routingMode] ?? routingStatus.routingMode)")
-            if let weeklyUtilization = routingStatus.subscriptionWeeklyUtilization {
-                Text("Weekly subscription usage: \(Int((weeklyUtilization * 100).rounded()))%")
-            }
-            if routingStatus.subscriptionWeeklyLimitReached {
-                Text("Weekly subscription limit reached")
+        if let subscriptionAccounts = subscriptionAccountStatusModel.subscriptionAccounts {
+            ForEach(subscriptionAccounts, id: \.subscriptionAccountName) { subscriptionAccount in
+                Text(describeSubscriptionAccount(subscriptionAccount))
             }
         } else {
             Text("claude-proxy does not answer on port 4100")
-            if let loadError = routingStatusModel.loadError {
+            if let loadError = subscriptionAccountStatusModel.loadError {
                 Text(loadError)
             }
         }
         Divider()
         Button("Open web UI") {
-            NSWorkspace.shared.open(RoutingStatusModel.claudeProxyBaseUrl.appending(path: "_proxy/"))
+            NSWorkspace.shared.open(SubscriptionAccountStatusModel.claudeProxyBaseUrl.appending(path: "_proxy/"))
         }
         Button("Refresh now") {
-            routingStatusModel.refresh()
+            subscriptionAccountStatusModel.refresh()
         }
         Divider()
         Button("Quit") {
@@ -112,22 +138,94 @@ struct RoutingStatusMenu: View {
 
 @main
 struct ClaudeProxyMenuBarApplication: App {
-    @StateObject private var routingStatusModel = RoutingStatusModel()
+    @StateObject private var subscriptionAccountStatusModel = SubscriptionAccountStatusModel()
 
     var body: some Scene {
         MenuBarExtra {
-            RoutingStatusMenu(routingStatusModel: routingStatusModel)
+            SubscriptionAccountStatusMenu(subscriptionAccountStatusModel: subscriptionAccountStatusModel)
         } label: {
-            Image(nsImage: routingStatusModel.menuBarImage)
+            Image(nsImage: subscriptionAccountStatusModel.menuBarImage)
         }
     }
 }
 
-/// Draws a filled circle with a letter on it. The image is not a template image, so macOS keeps its colours.
-func makeRouteDotImage(letter: String, colourHex: String) -> NSImage {
-    let fillColour = parseHexColour(colourHex) ?? .gray
+let blockedSubscriptionAccountColourHex = "#e5484d"
+let subscriptionAccountPieDiameter: CGFloat = 16
+let subscriptionAccountPieSpacing: CGFloat = 4
+let menuBarImageHeight: CGFloat = 18
+
+/// Draws one pie per subscription account. The image is not a template image, so macOS keeps its colours.
+func makeSubscriptionAccountPiesImage(subscriptionAccounts: [SubscriptionAccountStatus]) -> NSImage {
+    let pieCount = CGFloat(subscriptionAccounts.count)
+    let pieMargin = (menuBarImageHeight - subscriptionAccountPieDiameter) / 2
+    let imageWidth = max(
+        pieMargin * 2 + pieCount * subscriptionAccountPieDiameter + max(pieCount - 1, 0) * subscriptionAccountPieSpacing,
+        menuBarImageHeight
+    )
+    let piesImage = NSImage(size: NSSize(width: imageWidth, height: menuBarImageHeight), flipped: false) { _ in
+        for (pieIndex, subscriptionAccount) in subscriptionAccounts.enumerated() {
+            let pieRect = NSRect(
+                x: pieMargin + CGFloat(pieIndex) * (subscriptionAccountPieDiameter + subscriptionAccountPieSpacing),
+                y: pieMargin,
+                width: subscriptionAccountPieDiameter,
+                height: subscriptionAccountPieDiameter
+            )
+            drawSubscriptionAccountPie(subscriptionAccount: subscriptionAccount, in: pieRect)
+        }
+        return true
+    }
+    piesImage.isTemplate = false
+    return piesImage
+}
+
+func drawSubscriptionAccountPie(subscriptionAccount: SubscriptionAccountStatus, in pieRect: NSRect) {
+    let outlinePath = NSBezierPath(ovalIn: pieRect.insetBy(dx: 0.5, dy: 0.5))
+    let outlineColour = NSColor.black.withAlphaComponent(0.6)
+
+    if subscriptionAccount.loginState == "login_required" {
+        NSColor.gray.withAlphaComponent(0.25).setFill()
+        outlinePath.fill()
+        outlineColour.setStroke()
+        outlinePath.lineWidth = 1
+        outlinePath.stroke()
+        return
+    }
+
+    let pieColourHex = subscriptionAccount.isBlocked ? blockedSubscriptionAccountColourHex : subscriptionAccount.colour
+    let pieColour = parseHexColour(pieColourHex) ?? .gray
+    pieColour.withAlphaComponent(0.25).setFill()
+    outlinePath.fill()
+
+    let weeklyFraction = min(max(subscriptionAccount.weeklyUtilization ?? 0, 0), 1)
+    if weeklyFraction >= 1 {
+        pieColour.setFill()
+        outlinePath.fill()
+    } else if weeklyFraction > 0 {
+        let wedgePath = NSBezierPath()
+        let pieCentre = NSPoint(x: pieRect.midX, y: pieRect.midY)
+        wedgePath.move(to: pieCentre)
+        wedgePath.appendArc(
+            withCenter: pieCentre,
+            radius: pieRect.width / 2 - 0.5,
+            startAngle: 90,
+            endAngle: 90 - 360 * weeklyFraction,
+            clockwise: true
+        )
+        wedgePath.close()
+        pieColour.setFill()
+        wedgePath.fill()
+    }
+
+    outlineColour.setStroke()
+    outlinePath.lineWidth = 1
+    outlinePath.stroke()
+}
+
+/// Draws a grey dot with an exclamation mark, for when the proxy does not answer.
+func makeProxyUnreachableImage() -> NSImage {
+    let fillColour = parseHexColour("#9aa3ae") ?? .gray
     let letterColour = relativeLuminance(of: fillColour) > 0.4 ? NSColor.black : NSColor.white
-    let routeDotImage = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { imageRect in
+    let unreachableImage = NSImage(size: NSSize(width: menuBarImageHeight, height: menuBarImageHeight), flipped: false) { imageRect in
         let circlePath = NSBezierPath(ovalIn: imageRect.insetBy(dx: 1, dy: 1))
         fillColour.setFill()
         circlePath.fill()
@@ -139,7 +237,7 @@ func makeRouteDotImage(letter: String, colourHex: String) -> NSImage {
             .font: NSFont.systemFont(ofSize: 10.5, weight: .bold),
             .foregroundColor: letterColour,
         ]
-        let letterText = letter as NSString
+        let letterText = "!" as NSString
         let letterSize = letterText.size(withAttributes: letterAttributes)
         letterText.draw(
             at: NSPoint(x: (imageRect.width - letterSize.width) / 2, y: (imageRect.height - letterSize.height) / 2),
@@ -147,8 +245,8 @@ func makeRouteDotImage(letter: String, colourHex: String) -> NSImage {
         )
         return true
     }
-    routeDotImage.isTemplate = false
-    return routeDotImage
+    unreachableImage.isTemplate = false
+    return unreachableImage
 }
 
 func parseHexColour(_ colourHex: String) -> NSColor? {
