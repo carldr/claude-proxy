@@ -22,6 +22,8 @@ export interface SubscriptionAccountStatus {
 
 export interface SubscriptionAccountStatusResponse {
   subscriptionAccounts: SubscriptionAccountStatus[];
+  /** The fraction of a 5-hour or weekly window at which the proxy avoids an account. */
+  failoverUtilization: number;
   configErrors: string[];
 }
 

@@ -67,7 +67,12 @@ export function SubscriptionAccountsPanel({ accountStatus, accountStatusError, o
       </div>
       <div className="subscription-account-cards">
         {accountStatus.subscriptionAccounts.map((subscriptionAccount) => (
-          <SubscriptionAccountCard key={subscriptionAccount.subscriptionAccountName} subscriptionAccount={subscriptionAccount} onLogin={openLogin} />
+          <SubscriptionAccountCard
+            key={subscriptionAccount.subscriptionAccountName}
+            subscriptionAccount={subscriptionAccount}
+            failoverUtilization={accountStatus.failoverUtilization}
+            onLogin={openLogin}
+          />
         ))}
       </div>
       {accountStatus.subscriptionAccounts.length === 0 && <span className="muted">No subscription accounts in the configuration</span>}
@@ -78,9 +83,11 @@ export function SubscriptionAccountsPanel({ accountStatus, accountStatusError, o
 
 function SubscriptionAccountCard({
   subscriptionAccount,
+  failoverUtilization,
   onLogin,
 }: {
   subscriptionAccount: SubscriptionAccountStatus;
+  failoverUtilization: number;
   onLogin: (subscriptionAccountName: string) => void;
 }) {
   const isLoginRequired = subscriptionAccount.loginState === 'login_required';
@@ -94,7 +101,7 @@ function SubscriptionAccountCard({
       {sortUsageWindows(subscriptionAccount.usageWindows).map((usageWindow) => (
         <UsageWindowBar key={usageWindow.usageWindowName} usageWindow={usageWindow} />
       ))}
-      {subscriptionAccount.isBlocked && <div className="subscription-account-blocked">{describeBlock(subscriptionAccount.blockedUntil)}</div>}
+      {subscriptionAccount.isBlocked && <div className="subscription-account-blocked">{describeBlock(subscriptionAccount.blockedUntil, failoverUtilization)}</div>}
       <div className="subscription-account-actions">
         {isLoginRequired ? (
           <button onClick={() => onLogin(subscriptionAccount.subscriptionAccountName)}>Log in</button>
@@ -140,8 +147,8 @@ function sortUsageWindows(usageWindows: SubscriptionAccountUsageWindow[]): Subsc
   return [...usageWindows].sort((firstWindow, secondWindow) => windowRank(firstWindow) - windowRank(secondWindow));
 }
 
-function describeBlock(blockedUntil: string | null): string {
-  if (blockedUntil === null) return 'Not used: at 98% of a limit';
+function describeBlock(blockedUntil: string | null, failoverUtilization: number): string {
+  if (blockedUntil === null) return `Not used: at ${Math.round(failoverUtilization * 100)}% of a limit`;
   return `Blocked until ${new Date(blockedUntil).toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' })}`;
 }
 

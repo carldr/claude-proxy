@@ -37,6 +37,8 @@ export interface SubscriptionAccountStatus {
     usageWindows: SubscriptionAccountUsageWindow[];
     usageCheckedAt: string | null;
   }[];
+  /** The fraction of a 5-hour or weekly window at which the proxy avoids an account. */
+  failoverUtilization: number;
   configErrors: string[];
 }
 
@@ -66,6 +68,7 @@ function buildSubscriptionAccountStatus(dependencies: WebApiHandlerDependencies)
         usageCheckedAt: checkedAt,
       };
     }),
+    failoverUtilization: subscriptionAccountsConfig.failoverUtilization,
     configErrors: dependencies.readConfigErrors(),
   };
 }
