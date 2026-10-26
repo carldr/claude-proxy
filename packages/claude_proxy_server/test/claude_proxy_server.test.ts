@@ -165,6 +165,19 @@ test('parses five_hour, seven_day and per-model windows from the usage report', 
   assert.deepEqual(parseSubscriptionAccountUsageReport('nonsense'), []);
 });
 
+test('normalises the reset time of a usage report window to toISOString form, or to null when it is not a date', () => {
+  assert.deepEqual(
+    parseSubscriptionAccountUsageReport({
+      five_hour: { utilization: 9, resets_at: '2026-10-26T18:00:00.123456+00:00' },
+      seven_day: { utilization: 93, resets_at: 'not a date' },
+    }),
+    [
+      { usageWindowName: '5h', utilization: 0.09, resetsAt: '2026-10-26T18:00:00.123Z' },
+      { usageWindowName: '7d', utilization: 0.93, resetsAt: null },
+    ],
+  );
+});
+
 describe('claude-proxy', () => {
   let claudeProxyDirectory: string;
   let receivedRequests: ReceivedUpstreamRequest[];
@@ -465,6 +478,8 @@ describe('claude-proxy', () => {
       }
       await (await sendClaudeCodeRequest()).text();
       assert.deepEqual(readUpstreamSubscriptionAccountNames(), ['Personal']);
+      assert.equal(receivedRequests.filter((receivedRequest) => receivedRequest.upstreamName === 'anthropic').length, 1);
+      assert.equal(receivedRequests.find((receivedRequest) => receivedRequest.upstreamName === 'anthropic')!.headers.authorization, personalAuthorization);
     });
 
     test('shows an account at the threshold as blocked in the status', async () => {
