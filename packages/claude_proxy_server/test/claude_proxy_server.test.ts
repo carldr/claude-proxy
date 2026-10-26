@@ -6,9 +6,9 @@ import type net from 'node:net';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, mock, test } from 'node:test';
+import { afterEach, beforeEach, describe, test } from 'node:test';
 import tls from 'node:tls';
-import { changeFileModeOrWarn, createClaudeProxyServer, type ClaudeProxyServer } from '../src/claude_proxy_server.ts';
+import { createClaudeProxyServer, makeClaudeProxyFilePrivate, type ClaudeProxyServer } from '../src/claude_proxy_server.ts';
 import { parseSubscriptionAccountUsageReport } from '../src/subscription_account_usage_monitor.ts';
 
 interface ReceivedUpstreamRequest {
@@ -153,19 +153,42 @@ function readSubscriptionAccountName(receivedRequest: ReceivedUpstreamRequest): 
   }
 }
 
-test('logs one warning and does not throw when the mode of a file cannot change', () => {
-  const consoleErrorMock = mock.method(console, 'error', () => {});
-  try {
-    changeFileModeOrWarn('/other_user/requests.sqlite', 0o600, () => {
-      throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
-    });
-    assert.equal(consoleErrorMock.mock.callCount(), 1);
-    assert.deepEqual(consoleErrorMock.mock.calls[0]!.arguments, [
-      'claude-proxy could not set the mode of /other_user/requests.sqlite to 600: EPERM: operation not permitted',
-    ]);
-  } finally {
-    consoleErrorMock.mock.restore();
-  }
+test('refuses to start when the mode of a proxy file cannot change', () => {
+  const currentUid = 501;
+  assert.throws(
+    () =>
+      makeClaudeProxyFilePrivate('/Users/example_user/.claude-proxy', '/Users/example_user/.claude-proxy/requests.sqlite', 0o600, {
+        statSync: () => ({ uid: currentUid }),
+        chmodSync: () => {
+          throw new Error('EPERM: operation not permitted');
+        },
+      }, currentUid),
+    {
+      message:
+        'claude-proxy does not start: it could not set the mode of /Users/example_user/.claude-proxy/requests.sqlite to 600 ' +
+        '(owner uid 501, proxy uid 501): EPERM: operation not permitted. ' +
+        'Fix the ownership with: sudo chown -R $(id -un) /Users/example_user/.claude-proxy',
+    },
+  );
+});
+
+test('refuses to start when another user owns a proxy file, and does not change its mode', () => {
+  let chmodCallCount = 0;
+  assert.throws(
+    () =>
+      makeClaudeProxyFilePrivate('/Users/example_user/.claude-proxy', '/Users/example_user/.claude-proxy', 0o700, {
+        statSync: () => ({ uid: 0 }),
+        chmodSync: () => {
+          chmodCallCount++;
+        },
+      }, 501),
+    {
+      message:
+        'claude-proxy does not start: uid 0 owns /Users/example_user/.claude-proxy, but the proxy runs as uid 501, ' +
+        'so another user could read the refresh tokens. Fix the ownership with: sudo chown -R $(id -un) /Users/example_user/.claude-proxy',
+    },
+  );
+  assert.equal(chmodCallCount, 0);
 });
 
 test('parses five_hour, seven_day and per-model windows from the usage report', () => {
