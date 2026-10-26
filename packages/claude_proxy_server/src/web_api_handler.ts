@@ -146,7 +146,8 @@ export async function handleWebApiRequest(
       );
     }
 
-    if (clientRequest.method === 'GET' && apiPath === 'subscription-account-status') {
+    // Shell functions that start Claude Code probe `routing-status`, the name that this endpoint had before.
+    if (clientRequest.method === 'GET' && (apiPath === 'subscription-account-status' || apiPath === 'routing-status')) {
       return sendJson(clientResponse, 200, buildSubscriptionAccountStatus(dependencies));
     }
 
