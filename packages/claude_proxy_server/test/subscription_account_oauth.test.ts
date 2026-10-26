@@ -257,6 +257,19 @@ test('sends no refresh for 30 seconds after a transient failure, and returns the
   });
 });
 
+test('pauses refreshes after a refresh response without an access token, and returns the stored token', async () => {
+  await withFakeTokenServer(answerJson(200, { refresh_token: 'new-refresh-token' }), async ({ endpoints, receivedRequests }) => {
+    await withStore(async (store) => {
+      store.writeGrant(personalGrant(Date.now() + 2 * 60_000));
+      const refresher = new SubscriptionAccountGrantRefresher(store, endpoints);
+      assert.equal(await refresher.readAccessToken('Personal'), 'old-access-token');
+      assert.equal(await refresher.readAccessToken('Personal'), 'old-access-token');
+      assert.equal(receivedRequests.length, 1);
+      assert.equal(store.readGrant('Personal')?.refreshToken, 'old-refresh-token');
+    });
+  });
+});
+
 test('returns null during the refresh pause when the stored token has expired', async () => {
   await withFakeTokenServer(answerJson(500, { error: 'server_error' }), async ({ endpoints, receivedRequests }) => {
     await withStore(async (store) => {

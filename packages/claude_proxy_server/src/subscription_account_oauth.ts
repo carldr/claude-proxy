@@ -165,13 +165,18 @@ export class SubscriptionAccountGrantRefresher {
   }
 
   private async refreshGrant(grant: SubscriptionAccountGrant): Promise<string | null> {
-    let tokenResponse: TokenEndpointResponse;
+    let tokenResponse: TokenEndpointResponse & { access_token: string; expires_in: number };
     try {
-      tokenResponse = await postToTokenEndpoint(this.endpoints, {
+      const refreshResponse = await postToTokenEndpoint(this.endpoints, {
         grant_type: 'refresh_token',
         refresh_token: grant.refreshToken,
         client_id: claudeCodeOAuthClientId,
       });
+      // The refresher treats an incomplete answer as a transient failure, so it pauses and keeps the stored token.
+      if (!refreshResponse.access_token || typeof refreshResponse.expires_in !== 'number') {
+        throw new TokenEndpointError('Token endpoint answered a refresh without an access token or an expiry.', false);
+      }
+      tokenResponse = { ...refreshResponse, access_token: refreshResponse.access_token, expires_in: refreshResponse.expires_in };
     } catch (error) {
       if (error instanceof TokenEndpointError && error.isRefreshTokenPermanentlyRejected) {
         if (this.isGrantStillRefreshed(grant)) this.subscriptionAccountStore.writeGrant({ ...grant, isRefreshTokenRejected: true });
@@ -189,9 +194,6 @@ export class SubscriptionAccountGrantRefresher {
           `and uses its access token until it expires: ${(error as Error).message}`,
       );
       return liveAccessToken;
-    }
-    if (!tokenResponse.access_token || typeof tokenResponse.expires_in !== 'number') {
-      throw new Error('Token endpoint answered a refresh without an access token or an expiry.');
     }
     if (!this.isGrantStillRefreshed(grant)) return this.readLiveAccessTokenOfStoredGrant(grant);
     this.subscriptionAccountStore.writeGrant({
