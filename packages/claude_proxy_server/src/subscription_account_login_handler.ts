@@ -69,6 +69,12 @@ export class SubscriptionAccountLoginHandler {
     if (!pending || pending.expiresAt <= Date.now()) {
       throw new Error('The state is unknown or expired. Start the login again from the web UI.');
     }
+    const isStillConfigured = this.dependencies.readSubscriptionAccountsConfig().subscriptionAccounts.some(
+      (subscriptionAccount) => subscriptionAccount.name === pending.pendingLogin.subscriptionAccountName,
+    );
+    if (!isStillConfigured) {
+      throw new Error(`Subscription account "${pending.pendingLogin.subscriptionAccountName}" is no longer in subscription_accounts.yml.`);
+    }
     const authorizationError = callbackParameters.get('error');
     if (authorizationError) throw new Error(`The authorization server answered ${authorizationError}.`);
     const code = callbackParameters.get('code');

@@ -883,14 +883,14 @@ describe('claude-proxy', () => {
   });
 
   describe('subscription account login', () => {
-    function answerLoginWithIdentity(accountUuid: string, emailAddress: string) {
+    function answerLoginWithIdentity(accountUuid: string, organizationUuid: string, emailAddress: string) {
       respondAsTokenServer = (_, tokenResponse) =>
         sendJsonResponse(tokenResponse, 200, {
           access_token: 'login-access-token',
           refresh_token: 'login-refresh-token',
           expires_in: 28800,
           account: { uuid: accountUuid, email_address: emailAddress },
-          organization: { uuid: `${accountUuid}-organization` },
+          organization: { uuid: organizationUuid },
         });
     }
 
@@ -905,7 +905,7 @@ describe('claude-proxy', () => {
 
     test('logs in an account through the loopback callback', async () => {
       await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
-      answerLoginWithIdentity('person-account-uuid', 'person@example.com');
+      answerLoginWithIdentity('person-account-uuid', 'person-organization-uuid', 'person@example.com');
 
       const { loginResponse, loginBody } = await startLogin('Personal');
       assert.equal(loginResponse.status, 200);
@@ -926,7 +926,7 @@ describe('claude-proxy', () => {
     test('replaces the grant when the same account logs in again', async () => {
       await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
       storeTestGrant('Personal', 'personal-token');
-      answerLoginWithIdentity('Personal-account-uuid', 'person@example.com');
+      answerLoginWithIdentity('Personal-account-uuid', 'Personal-organization-uuid', 'person@example.com');
       const { loginBody } = await startLogin('Personal');
       const callbackResponse = await callCallback(`code=the-code&state=${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
       assert.equal(callbackResponse.status, 302);
@@ -955,7 +955,7 @@ describe('claude-proxy', () => {
 
     test('rejects a callback with an unknown state', async () => {
       await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
-      answerLoginWithIdentity('person-account-uuid', 'person@example.com');
+      answerLoginWithIdentity('person-account-uuid', 'person-organization-uuid', 'person@example.com');
       const callbackResponse = await callCallback('code=the-code&state=unknown-state');
       assert.equal(callbackResponse.status, 400);
       assert.match(await callbackResponse.text(), /state/);
@@ -965,7 +965,7 @@ describe('claude-proxy', () => {
 
     test('accepts a state once only', async () => {
       await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
-      answerLoginWithIdentity('person-account-uuid', 'person@example.com');
+      answerLoginWithIdentity('person-account-uuid', 'person-organization-uuid', 'person@example.com');
       const { loginBody } = await startLogin('Personal');
       const callbackQuery = `code=the-code&state=${new URL(loginBody.authorizeUrl).searchParams.get('state')}`;
       assert.equal((await callCallback(callbackQuery)).status, 302);
@@ -980,6 +980,18 @@ describe('claude-proxy', () => {
       assert.equal(callbackResponse.status, 400);
       assert.match(await callbackResponse.text(), /invalid_grant/);
       assert.equal(claudeProxyServer.subscriptionAccountStore.readGrant('Personal'), null);
+    });
+
+    test('does not show any part of a successful token response that is not JSON', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
+      respondAsTokenServer = (_, tokenResponse) => {
+        tokenResponse.writeHead(200, { 'content-type': 'text/plain' });
+        tokenResponse.end('not json sk-ant-oat-secret');
+      };
+      const { loginBody } = await startLogin('Personal');
+      const callbackResponse = await callCallback(`code=the-code&state=${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
+      assert.equal(callbackResponse.status, 400);
+      assert.doesNotMatch(await callbackResponse.text(), /sk-ant-oat-secret/);
     });
 
     test('rejects a callback that carries an error instead of a code', async () => {
