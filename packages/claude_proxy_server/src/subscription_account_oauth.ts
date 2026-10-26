@@ -74,19 +74,26 @@ async function postToTokenEndpoint(endpoints: OAuthEndpoints, requestBody: Recor
   });
   const responseText = await response.text();
   if (!response.ok) {
-    let errorCode: unknown;
+    let errorBody: { error?: unknown; error_description?: unknown } = {};
     try {
-      errorCode = (JSON.parse(responseText) as { error?: unknown }).error;
+      const parsedBody: unknown = JSON.parse(responseText);
+      if (parsedBody && typeof parsedBody === 'object') errorBody = parsedBody;
     } catch {
-      errorCode = undefined;
+      // The error text then carries the HTTP status only.
     }
-    const isInvalidGrant = [400, 401, 403].includes(response.status) && errorCode === 'invalid_grant';
-    throw new TokenEndpointError(`Token endpoint answered ${response.status}: ${responseText}`, isInvalidGrant);
+    const isInvalidGrant = [400, 401, 403].includes(response.status) && errorBody.error === 'invalid_grant';
+    const errorDetails = [errorBody.error, errorBody.error_description]
+      .filter((errorField): errorField is string => typeof errorField === 'string')
+      .map((errorField) => errorField.slice(0, 200));
+    throw new TokenEndpointError(
+      `Token endpoint answered ${response.status}${errorDetails.length > 0 ? `: ${errorDetails.join(': ')}` : ''}`,
+      isInvalidGrant,
+    );
   }
   try {
     return JSON.parse(responseText) as TokenEndpointResponse;
   } catch {
-    throw new TokenEndpointError(`Token endpoint answered invalid JSON: ${responseText}`, false);
+    throw new TokenEndpointError('Token endpoint answered a body that is not JSON.', false);
   }
 }
 
@@ -158,14 +165,14 @@ export class SubscriptionAccountGrantRefresher {
     } catch (error) {
       if (error instanceof TokenEndpointError && error.isRefreshTokenPermanentlyRejected) {
         if (this.isGrantStillRefreshed(grant)) this.subscriptionAccountStore.writeGrant({ ...grant, isRefreshTokenRejected: true });
-        return this.readLiveAccessTokenOfReplacedGrant(grant);
+        return this.readLiveAccessTokenOfStoredGrant(grant);
       }
       throw error;
     }
     if (!tokenResponse.access_token || typeof tokenResponse.expires_in !== 'number') {
       throw new Error('Token endpoint answered a refresh without an access token or an expiry.');
     }
-    if (!this.isGrantStillRefreshed(grant)) return this.readLiveAccessTokenOfReplacedGrant(grant);
+    if (!this.isGrantStillRefreshed(grant)) return this.readLiveAccessTokenOfStoredGrant(grant);
     this.subscriptionAccountStore.writeGrant({
       ...grant,
       accessToken: tokenResponse.access_token,
@@ -184,7 +191,7 @@ export class SubscriptionAccountGrantRefresher {
     return storedGrant?.refreshToken === refreshedGrant.refreshToken;
   }
 
-  private readLiveAccessTokenOfReplacedGrant(refreshedGrant: SubscriptionAccountGrant): string | null {
+  private readLiveAccessTokenOfStoredGrant(refreshedGrant: SubscriptionAccountGrant): string | null {
     const storedGrant = this.subscriptionAccountStore.readGrant(refreshedGrant.subscriptionAccountName);
     if (!storedGrant || storedGrant.isRefreshTokenRejected) return null;
     return storedGrant.accessTokenExpiresAt > Date.now() ? storedGrant.accessToken : null;
