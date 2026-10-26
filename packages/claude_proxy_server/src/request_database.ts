@@ -239,9 +239,17 @@ export class RequestDatabase {
     return { projectPath: inheritedProjectPath, isProjectPathInherited: inheritedProjectPath !== null };
   }
 
+  /** Returns the project of a new request: its own project path, or the one inherited from the conversation or the session. */
+  findProjectPath(
+    sessionId: string | null,
+    projectPath: string | null,
+    previousUpstreamRequestId: string | null,
+  ): { projectPath: string | null; isProjectPathInherited: boolean } {
+    return this.assignProjectPath(Number.MAX_SAFE_INTEGER, sessionId, projectPath, previousUpstreamRequestId);
+  }
+
   insertStartedRequest(startedRequest: StartedProxiedRequest): number {
-    const projectPathAssignment = this.assignProjectPath(
-      Number.MAX_SAFE_INTEGER,
+    const projectPathAssignment = this.findProjectPath(
       startedRequest.sessionId,
       startedRequest.projectPath,
       startedRequest.previousUpstreamRequestId,
