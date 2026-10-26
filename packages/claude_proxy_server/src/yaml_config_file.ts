@@ -3,7 +3,9 @@ import { parse as parseYaml } from 'yaml';
 
 /**
  * Reads a YAML file and parses it again only when its modification time changes.
- * A parse or validation error is kept and reported, so the caller can show it in the web UI.
+ * After a parse or validation error, the file keeps the last config that loaded without an error.
+ * Before any valid load, the config is the empty config.
+ * The error is reported, so the caller can show it in the web UI.
  */
 export class YamlConfigFile<ParsedConfig> {
   private loadedModificationTimeMs: number | null = null;
@@ -33,7 +35,6 @@ export class YamlConfigFile<ParsedConfig> {
         this.loadedConfig = this.parseConfig(parseYaml(fs.readFileSync(this.filePath, 'utf8')));
         this.loadError = null;
       } catch (error) {
-        this.loadedConfig = this.emptyConfig;
         this.loadError = `${this.filePath}: ${(error as Error).message}`;
         console.error(this.loadError);
       }
