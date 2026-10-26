@@ -57,6 +57,8 @@ The proxy swaps the token on `/v1/messages*` only. Requests that carry their own
 
 Run `pnpm install_launchd_agents` again after a Node.js upgrade, because the agent stores the path to `node`.
 
+Delete `~/.claude-proxy/routes.yml` after an upgrade from an earlier version. It holds API keys in plain text, and the proxy no longer reads it.
+
 ## Connecting Claude Code
 
 Claude Code reaches the proxy in one of two ways:
@@ -171,12 +173,11 @@ The proxy reads `subscription_accounts.yml` again at each change, without a rest
 
 ### Log in to the subscription accounts
 
-The proxy needs its own login to each account. This login gives the proxy a grant that is separate from Claude Code's login. The proxy stores the grants in `requests.sqlite` and refreshes them itself.
+The proxy needs its own login to each account. This login gives the proxy a grant that is separate from Claude Code's login. The proxy stores the grants in `requests.sqlite` and refreshes them itself. Use a different Claude account for each subscription account.
 
 1. Open the web UI.
 2. Press **Log in** on an account.
 3. Log in to that Claude account in the browser.
-4. Use a different Claude account for each subscription account.
 
 An account without a live grant sends Claude Code's own token unchanged. The web UI shows **Log in** again when the grant stops working.
 
@@ -191,7 +192,7 @@ Open `http://127.0.0.1:4100/_proxy/`.
 
 ## Menu bar
 
-The menu bar shows one pie per subscription account, in file order. Each pie has the colour of its account and shows the weekly usage. A pie turns red when the proxy avoids the account: at the 5-hour or weekly limit, or at `failover_utilization`. When every pie is red, no account can take requests. A grey `!` means the proxy does not answer. The app reads the status once a minute.
+The menu bar shows one pie per subscription account, in file order. Each pie has the colour of its account and shows the usage of its weekly window. A pie turns red when the proxy avoids the account: at the limit of its 5-hour or weekly window, or at `failover_utilization` of either window. When every pie is red, no account can take requests. A grey `!` means the proxy does not answer. The app reads the status once a minute.
 
 ## Commands
 
