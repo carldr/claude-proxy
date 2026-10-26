@@ -3,7 +3,7 @@ import { parse as parseYaml } from 'yaml';
 
 /**
  * Reads a YAML file and parses it again only when its modification time changes.
- * After a parse or validation error, the file keeps the last config that loaded without an error.
+ * After a parse or validation error, or when the file disappears, this class keeps the last config that loaded without an error.
  * Before any valid load, the config is the empty config.
  * The error is reported, so the caller can show it in the web UI.
  */
@@ -27,7 +27,8 @@ export class YamlConfigFile<ParsedConfig> {
     try {
       modificationTimeMs = fs.statSync(this.filePath).mtimeMs;
     } catch {
-      return { config: this.emptyConfig, loadError: `${this.filePath} does not exist` };
+      this.loadedModificationTimeMs = null;
+      return { config: this.loadedConfig, loadError: `${this.filePath} does not exist` };
     }
     if (modificationTimeMs !== this.loadedModificationTimeMs) {
       this.loadedModificationTimeMs = modificationTimeMs;
