@@ -954,6 +954,11 @@ describe('claude-proxy', () => {
       assert.equal(findStatusAccount(await readApi('subscription-account-status'), 'Personal').weeklyUtilization, 0.5);
     });
 
+    test('reports the failover utilization of subscription_accounts.yml', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}), `${subscriptionAccountsYaml}failover_utilization: 0.9\n`);
+      assert.equal((await readApi('subscription-account-status')).failoverUtilization, 0.9);
+    });
+
     test('lists the configuration errors of subscription_accounts.yml', async () => {
       await startProxy(
         (_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}),
