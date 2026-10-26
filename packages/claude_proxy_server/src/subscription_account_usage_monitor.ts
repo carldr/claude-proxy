@@ -13,7 +13,13 @@ interface UsageReportWindow {
 function parseUsageReportWindow(usageWindowName: string, reportWindow: UsageReportWindow | null | undefined, percent: unknown = reportWindow?.utilization) {
   if (typeof percent !== 'number') return null;
   const resetsAt = reportWindow?.resets_at;
-  return { usageWindowName, utilization: percent / 100, resetsAt: typeof resetsAt === 'string' ? resetsAt : null };
+  // The stored reset time must be in `toISOString` form, because the failover rule compares reset times as strings.
+  const resetsAtDate = typeof resetsAt === 'string' ? new Date(resetsAt) : null;
+  return {
+    usageWindowName,
+    utilization: percent / 100,
+    resetsAt: resetsAtDate !== null && !Number.isNaN(resetsAtDate.getTime()) ? resetsAtDate.toISOString() : null,
+  };
 }
 
 /**
