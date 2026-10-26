@@ -1133,6 +1133,11 @@ describe('claude-proxy', () => {
       assert.ok(status.configErrors.length > 0);
       assert.match(status.configErrors[0], /Unknown/);
     });
+
+    test('answers the old routing-status path with the same status, for shells that probe it', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
+      assert.deepEqual(await readApi('routing-status'), await readApi('subscription-account-status'));
+    });
   });
 
   describe('subscription account login', () => {
