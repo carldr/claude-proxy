@@ -11,6 +11,8 @@ Today Carl does all his work on Nettl, and he hits the weekly limit again and ag
 
 The proxy already fails over from the subscription to API keys. That failover goes away. Anthropic's monthly API credits do not apply to Claude Code, so the API keys are of no use.
 
+Both accounts are individual Max plans, with different emails. Extra usage (overage) is off on both. If Carl turns overage on later, an account that uses overage does not fail over. Overage only matters because with it on, an account no longer rejects at its limit.
+
 ## Goals
 
 1. Send each Claude Code request to the account that owns its project, chosen by glob patterns on the project directory.
@@ -97,7 +99,7 @@ default_subscription_account: Personal
 - The account is blocked until the reset time of the window that rejected it.
 - *Claude's call:* a rejection by a per-model window, such as Fable's weekly window, blocks only requests for that model on that account. Requests for other models stay on the account. A per-model block does not turn the menu bar pie red. That time comes from the reset header for that window, or else from the usage poll.
 - If every account is blocked, Claude Code gets the rejection from the project's own account. Claude Code then shows its normal limit message.
-- Any other response, such as a 401, a 5xx or a network error, goes to Claude Code unchanged, with no failover.
+- Any other response, such as a 401, a 5xx or a network error, goes to Claude Code unchanged, with no failover. Both accounts are on the same tier, so a model that one account serves, the other account also serves.
 - Two side effects are accepted. The first request on the other account writes the conversation to that account's prompt cache again. The response's rate-limit headers describe the other account, so Claude Code's usage warnings do too.
 
 ### Usage
