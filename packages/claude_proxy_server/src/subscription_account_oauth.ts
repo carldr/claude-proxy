@@ -157,14 +157,15 @@ export class SubscriptionAccountGrantRefresher {
       });
     } catch (error) {
       if (error instanceof TokenEndpointError && error.isRefreshTokenPermanentlyRejected) {
-        this.subscriptionAccountStore.writeGrant({ ...grant, isRefreshTokenRejected: true });
-        return null;
+        if (this.isGrantStillRefreshed(grant)) this.subscriptionAccountStore.writeGrant({ ...grant, isRefreshTokenRejected: true });
+        return this.readLiveAccessTokenOfReplacedGrant(grant);
       }
       throw error;
     }
     if (!tokenResponse.access_token || typeof tokenResponse.expires_in !== 'number') {
       throw new Error('Token endpoint answered a refresh without an access token or an expiry.');
     }
+    if (!this.isGrantStillRefreshed(grant)) return this.readLiveAccessTokenOfReplacedGrant(grant);
     this.subscriptionAccountStore.writeGrant({
       ...grant,
       accessToken: tokenResponse.access_token,
@@ -175,5 +176,17 @@ export class SubscriptionAccountGrantRefresher {
       emailAddress: tokenResponse.account?.email_address ?? grant.emailAddress,
     });
     return tokenResponse.access_token;
+  }
+
+  /** A login can store a new grant while a refresh is in flight. The refresh result then belongs to the replaced grant. */
+  private isGrantStillRefreshed(refreshedGrant: SubscriptionAccountGrant): boolean {
+    const storedGrant = this.subscriptionAccountStore.readGrant(refreshedGrant.subscriptionAccountName);
+    return storedGrant?.refreshToken === refreshedGrant.refreshToken;
+  }
+
+  private readLiveAccessTokenOfReplacedGrant(refreshedGrant: SubscriptionAccountGrant): string | null {
+    const storedGrant = this.subscriptionAccountStore.readGrant(refreshedGrant.subscriptionAccountName);
+    if (!storedGrant || storedGrant.isRefreshTokenRejected) return null;
+    return storedGrant.accessTokenExpiresAt > Date.now() ? storedGrant.accessToken : null;
   }
 }

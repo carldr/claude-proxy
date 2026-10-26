@@ -232,3 +232,61 @@ test('keeps the grant on a transient failure', async () => {
     });
   });
 });
+
+test('drops the result of a refresh when a login stored a new grant while the refresh was in flight', async () => {
+  let answerSlowRefresh!: () => void;
+  const slowRefreshAnswerGate = new Promise<void>((resolve) => (answerSlowRefresh = resolve));
+  const refreshRequestReceived = Promise.withResolvers<void>();
+  await withFakeTokenServer(
+    (response) => {
+      refreshRequestReceived.resolve();
+      slowRefreshAnswerGate.then(() => answerJson(200, refreshedTokenResponse)(response));
+    },
+    async ({ endpoints }) => {
+      await withStore(async (store) => {
+        store.writeGrant(personalGrant(Date.now() - 1000));
+        const refresher = new SubscriptionAccountGrantRefresher(store, endpoints);
+        const accessTokenPromise = refresher.readAccessToken('Personal');
+        await refreshRequestReceived.promise;
+        store.writeGrant({
+          ...personalGrant(Date.now() + 8 * 60 * 60 * 1000),
+          accessToken: 'login-access-token',
+          refreshToken: 'login-refresh-token',
+        });
+        answerSlowRefresh();
+        assert.equal(await accessTokenPromise, 'login-access-token');
+        assert.equal(store.readGrant('Personal')?.accessToken, 'login-access-token');
+        assert.equal(store.readGrant('Personal')?.refreshToken, 'login-refresh-token');
+      });
+    },
+  );
+});
+
+test('does not mark a new grant rejected when the refresh of the replaced grant answers invalid_grant', async () => {
+  let answerSlowRefresh!: () => void;
+  const slowRefreshAnswerGate = new Promise<void>((resolve) => (answerSlowRefresh = resolve));
+  const refreshRequestReceived = Promise.withResolvers<void>();
+  await withFakeTokenServer(
+    (response) => {
+      refreshRequestReceived.resolve();
+      slowRefreshAnswerGate.then(() => answerJson(400, { error: 'invalid_grant' })(response));
+    },
+    async ({ endpoints }) => {
+      await withStore(async (store) => {
+        store.writeGrant(personalGrant(Date.now() - 1000));
+        const refresher = new SubscriptionAccountGrantRefresher(store, endpoints);
+        const accessTokenPromise = refresher.readAccessToken('Personal');
+        await refreshRequestReceived.promise;
+        store.writeGrant({
+          ...personalGrant(Date.now() + 8 * 60 * 60 * 1000),
+          accessToken: 'login-access-token',
+          refreshToken: 'login-refresh-token',
+        });
+        answerSlowRefresh();
+        assert.equal(await accessTokenPromise, 'login-access-token');
+        assert.equal(store.readGrant('Personal')?.isRefreshTokenRejected, false);
+        assert.equal(store.readGrant('Personal')?.refreshToken, 'login-refresh-token');
+      });
+    },
+  );
+});
