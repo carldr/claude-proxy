@@ -192,7 +192,7 @@ Open `http://127.0.0.1:4100/_proxy/`.
 
 ## Menu bar
 
-The menu bar shows one pie per subscription account, in file order. Each pie has the colour of its account and shows the usage of its weekly window. A pie turns red when the proxy avoids the account: at the limit of its 5-hour or weekly window, or at `failover_utilization` of either window. When every pie is red, no account can take requests. A grey `!` means the proxy does not answer. The app reads the status once a minute.
+The menu bar shows one pie per subscription account, in file order. Each pie has the colour of its account and shows the usage of its weekly window. A pie turns red when the proxy avoids the account: at the limit of its 5-hour or weekly window, or at `failover_utilization` of either window. A pie is full and red when a weekly window blocks the account. When every pie is red, no account can take requests. A grey `!` means the proxy does not answer. The app reads the status once a minute.
 
 ## Commands
 

@@ -389,6 +389,10 @@ describe('claude-proxy', () => {
 
     await (await sendClaudeCodeRequest()).text();
     assert.deepEqual(readUpstreamSubscriptionAccountNames(), ['Personal', 'Work', 'Work']);
+
+    const status = await readApi('subscription-account-status');
+    assert.equal(findStatusAccount(status, 'Personal').blockedRateLimitWindow, 'seven_day');
+    assert.equal(findStatusAccount(status, 'Work').blockedRateLimitWindow, null);
   });
 
   test('fails over on a five-hour rejection, in the other direction', async () => {

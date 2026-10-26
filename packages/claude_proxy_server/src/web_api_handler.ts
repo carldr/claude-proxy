@@ -32,6 +32,8 @@ export interface SubscriptionAccountStatus {
     /** True for a block on the whole account, not on one model, and for an account at the failover utilization. */
     isBlocked: boolean;
     blockedUntil: string | null;
+    /** The window of the whole-account block, such as `five_hour` or `seven_day`. Null when no such block is active. */
+    blockedRateLimitWindow: string | null;
     usageWindows: SubscriptionAccountUsageWindow[];
     usageCheckedAt: string | null;
   }[];
@@ -59,6 +61,7 @@ function buildSubscriptionAccountStatus(dependencies: WebApiHandlerDependencies)
           wholeAccountBlock !== undefined ||
           isSubscriptionAccountAboveFailoverUtilization(usageWindows, subscriptionAccountsConfig.failoverUtilization, new Date()),
         blockedUntil: wholeAccountBlock?.blockedUntil ?? null,
+        blockedRateLimitWindow: wholeAccountBlock?.rateLimitWindow ?? null,
         usageWindows,
         usageCheckedAt: checkedAt,
       };

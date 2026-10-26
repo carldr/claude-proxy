@@ -9,6 +9,8 @@ struct SubscriptionAccountStatus: Decodable {
     let weeklyUtilization: Double?
     let isBlocked: Bool
     let blockedUntil: String?
+    /// The window of the whole-account block, such as `five_hour` or `seven_day`.
+    let blockedRateLimitWindow: String?
 }
 
 struct SubscriptionAccountStatusResponse: Decodable {
@@ -196,7 +198,9 @@ func drawSubscriptionAccountPie(subscriptionAccount: SubscriptionAccountStatus, 
     pieColour.withAlphaComponent(0.25).setFill()
     outlinePath.fill()
 
-    let weeklyFraction = min(max(subscriptionAccount.weeklyUtilization ?? 0, 0), 1)
+    // A block for a weekly window draws a full pie, because the stored weekly utilization can be below 1.
+    let isBlockedForWeeklyWindow = subscriptionAccount.blockedRateLimitWindow?.hasPrefix("seven_day") ?? false
+    let weeklyFraction = isBlockedForWeeklyWindow ? 1 : min(max(subscriptionAccount.weeklyUtilization ?? 0, 0), 1)
     if weeklyFraction >= 1 {
         pieColour.setFill()
         outlinePath.fill()

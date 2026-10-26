@@ -14,6 +14,8 @@ export interface SubscriptionAccountStatus {
   isBlocked: boolean;
   /** Null while `isBlocked` is true means the account is at the failover utilization of a window. */
   blockedUntil: string | null;
+  /** The window of the whole-account block, such as `five_hour` or `seven_day`. Null when no such block is active. */
+  blockedRateLimitWindow: string | null;
   usageWindows: SubscriptionAccountUsageWindow[];
   usageCheckedAt: string | null;
 }
