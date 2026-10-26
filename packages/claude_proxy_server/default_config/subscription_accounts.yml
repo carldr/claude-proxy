@@ -8,6 +8,8 @@
 # The first matching route wins.
 #
 # default_subscription_account: The account for a project that no route matches, and for a request with no project.
+#
+# failover_utilization: The proxy avoids an account at or above this fraction of its 5-hour or weekly limit. Other servers keep the rest.
 subscription_accounts:
   - name: Work
     colour: "#a1c63d"
@@ -19,3 +21,4 @@ project_routes:
   - project_path_pattern: ~/Development/work-dev
     subscription_account: Work
 default_subscription_account: Personal
+failover_utilization: 0.98

@@ -5,6 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ProxiedRequestFilters, RequestDatabase } from './request_database.ts';
 import type { SubscriptionAccountStore, SubscriptionAccountUsageWindow } from './subscription_account_store.ts';
 import type { SubscriptionAccountUsageMonitor } from './subscription_account_usage_monitor.ts';
+import { isSubscriptionAccountAboveFailoverUtilization } from './subscription_account_router.ts';
 import type { SubscriptionAccountsConfig } from './subscription_accounts_config.ts';
 
 export const webApiPathPrefix = '/_proxy/api/';
@@ -26,7 +27,7 @@ export interface SubscriptionAccountStatus {
     loginState: 'logged_in' | 'login_required';
     /** The `7d` usage window, as a fraction from 0 to 1. */
     weeklyUtilization: number | null;
-    /** True only for a block on the whole account, not for a block on one model. */
+    /** True for a block on the whole account, not on one model, and for an account at the failover utilization. */
     isBlocked: boolean;
     blockedUntil: string | null;
     usageWindows: SubscriptionAccountUsageWindow[];
@@ -38,8 +39,9 @@ export interface SubscriptionAccountStatus {
 function buildSubscriptionAccountStatus(dependencies: WebApiHandlerDependencies): SubscriptionAccountStatus {
   const { subscriptionAccountStore } = dependencies;
   const activeLimitBlocks = subscriptionAccountStore.readActiveLimitBlocks(new Date());
+  const subscriptionAccountsConfig = dependencies.readSubscriptionAccountsConfig();
   return {
-    subscriptionAccounts: dependencies.readSubscriptionAccountsConfig().subscriptionAccounts.map((subscriptionAccount) => {
+    subscriptionAccounts: subscriptionAccountsConfig.subscriptionAccounts.map((subscriptionAccount) => {
       const grant = subscriptionAccountStore.readGrant(subscriptionAccount.name);
       const { usageWindows, checkedAt } = subscriptionAccountStore.readUsageWindows(subscriptionAccount.name);
       const wholeAccountBlock = activeLimitBlocks.find(
@@ -51,7 +53,9 @@ function buildSubscriptionAccountStatus(dependencies: WebApiHandlerDependencies)
         emailAddress: grant?.emailAddress ?? null,
         loginState: grant && !grant.isRefreshTokenRejected ? 'logged_in' : 'login_required',
         weeklyUtilization: usageWindows.find((usageWindow) => usageWindow.usageWindowName === '7d')?.utilization ?? null,
-        isBlocked: wholeAccountBlock !== undefined,
+        isBlocked:
+          wholeAccountBlock !== undefined ||
+          isSubscriptionAccountAboveFailoverUtilization(usageWindows, subscriptionAccountsConfig.failoverUtilization),
         blockedUntil: wholeAccountBlock?.blockedUntil ?? null,
         usageWindows,
         usageCheckedAt: checkedAt,

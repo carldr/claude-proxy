@@ -14,12 +14,17 @@ export interface SubscriptionAccountsConfig {
   subscriptionAccounts: SubscriptionAccount[];
   projectRoutes: ProjectRoute[];
   defaultSubscriptionAccountName: string | null;
+  /** A subscription account at or above this utilization of its 5-hour or weekly window is avoided before it rejects a request. */
+  failoverUtilization: number;
 }
+
+const defaultFailoverUtilization = 0.98;
 
 export const emptySubscriptionAccountsConfig: SubscriptionAccountsConfig = {
   subscriptionAccounts: [],
   projectRoutes: [],
   defaultSubscriptionAccountName: null,
+  failoverUtilization: defaultFailoverUtilization,
 };
 
 /** Validates the parsed contents of `subscription_accounts.yml`. A leading `~` in a pattern becomes `homeDirectory`. */
@@ -29,6 +34,7 @@ export function parseSubscriptionAccountsConfig(yamlValue: unknown, homeDirector
     subscription_accounts?: unknown;
     project_routes?: unknown;
     default_subscription_account?: unknown;
+    failover_utilization?: unknown;
   };
 
   const readEntries = (listName: string, listValue: unknown): Record<string, unknown>[] => {
@@ -91,7 +97,16 @@ export function parseSubscriptionAccountsConfig(yamlValue: unknown, homeDirector
     }
   }
 
-  return { subscriptionAccounts, projectRoutes, defaultSubscriptionAccountName };
+  let failoverUtilization = defaultFailoverUtilization;
+  if (yamlObject.failover_utilization !== null && yamlObject.failover_utilization !== undefined) {
+    const failoverUtilizationValue = yamlObject.failover_utilization;
+    if (typeof failoverUtilizationValue !== 'number' || !(failoverUtilizationValue > 0 && failoverUtilizationValue <= 1)) {
+      throw new Error('failover_utilization must be a number above 0 and at most 1');
+    }
+    failoverUtilization = failoverUtilizationValue;
+  }
+
+  return { subscriptionAccounts, projectRoutes, defaultSubscriptionAccountName, failoverUtilization };
 }
 
 /**
