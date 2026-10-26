@@ -2,7 +2,8 @@ import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 import { extractClaudeCodeRequestContext } from './claude_code_request_context.ts';
 
-export type RouteKind = 'subscription' | 'api_key' | 'passthrough';
+/** A `subscription` route forwards Claude Code's own token. Only rows from earlier versions of the proxy have `api_key`. */
+export type RouteKind = 'subscription_account' | 'subscription' | 'api_key' | 'passthrough';
 export type ClientAuthKind = 'oauth' | 'api_key' | 'none';
 
 export interface StartedProxiedRequest {
