@@ -340,6 +340,34 @@
 
 - [ ] **Step 5: Commit** `git commit -m "Poll every subscription account's usage with its own grant, and serve the account status"`
 
+### Task 11: Fail over at a utilisation threshold
+
+Added on 2026-10-26, after Task 6, and run before Task 7. The user's cron jobs on other servers use Work without the proxy. The proxy must stop using an account at 98%, so the cron jobs keep the last 2%.
+
+**Files:**
+- Modify: `packages/claude_proxy_server/src/subscription_accounts_config.ts`, `default_config/subscription_accounts.yml`
+- Modify: `packages/claude_proxy_server/src/subscription_account_router.ts`
+- Modify: the status code from Task 6 (`isBlocked`)
+- Test: `test/subscription_accounts_config.test.ts`, `test/claude_proxy_server.test.ts`
+
+**Interfaces:**
+- Produces: `SubscriptionAccountsConfig.failoverUtilization: number`, from the optional YAML key `failover_utilization`. It must be a number above 0 and at most 1, with a default of `0.98`.
+
+- [ ] **Step 1: Write the failing tests:**
+  - `reads failover_utilization and defaults it to 0.98` (config test). A value of `1.5` throws `/failover_utilization must be a number above 0 and at most 1/`.
+  - `routes away from an account at the failover utilization, before any rejection` (proxy test). Personal answers 200 with `anthropic-ratelimit-unified-7d-utilization: 0.98`. The next default-project request goes to Work first.
+  - `routes away on the 5-hour window too`. The same, with `5h-utilization: 0.99` and `7d-utilization: 0.10`.
+  - `returns to the account when its utilization falls below the threshold`. A later Personal response, or a usage poll, reporting `0.50` for both windows sends the next request to Personal again.
+  - `shows an account at the threshold as blocked in the status`: `isBlocked: true`.
+
+- [ ] **Step 2: Run** the two test files. Expected: FAIL.
+
+- [ ] **Step 3: Implement.** In `planRoutes`, an account also counts as blocked when its stored `5h` or `7d` usage window has `utilization >= failoverUtilization`. Treat it exactly as an account with an active whole-account block, in ordering and in the all-blocked case. The status endpoint's `isBlocked` uses the same rule. Factor the rule into one `isSubscriptionAccountAboveFailoverUtilization` function that both call. Add `failover_utilization: 0.98` to the default YAML, with a one-line comment.
+
+- [ ] **Step 4: Run** `pnpm test` and the server typecheck. Expected: PASS.
+
+- [ ] **Step 5: Commit** `git commit -m "Route away from a subscription account at 98% of its 5-hour or weekly limit"`
+
 ### Task 7: Log in to a subscription account from the web UI
 
 **Files:**

@@ -23,7 +23,6 @@ Both accounts are on the same plan tier, with different emails. Extra usage (ove
 ## Non-goals
 
 - Switching the account that Claude Code itself is logged in to. The proxy never touches Claude Code's credentials, Keychain or `~/.claude`.
-- Proactive switching at a usage threshold, as `cswap auto` does. Failover happens only on a real rejection. Commit `2ba7f3c` made the API-key failover work the same way, in place of switching at 98% usage.
 - Keeping any API-key routing.
 
 ## Anti-goals
@@ -79,6 +78,7 @@ project_routes:
   - project_path_pattern: ~/Development/work-dev
     subscription_account: Work
 default_subscription_account: Personal
+failover_utilization: 0.98
 ```
 
 - `project_routes` are checked in order, and the first match wins. A pattern also matches every subdirectory of a matching directory. `~` expands to the home directory.
@@ -95,6 +95,7 @@ default_subscription_account: Personal
 ### Failover
 
 - Trigger: a 429 whose rate-limit headers show a rejection by a 5-hour window or by any weekly window. The weekly windows include per-model ones such as Fable's. `readSubscriptionWeeklyRateLimit` now detects only `seven_day*`, and it must also detect `five_hour`.
+- Second trigger: an account whose 5-hour or weekly (7d) utilisation is at or above `failover_utilization` counts as blocked for routing. The default is 0.98. The utilisation comes from the latest response headers or usage poll. The user's cron jobs on other servers use Work without the proxy, and the threshold leaves them the last 2%. The account is usable again when a header or poll shows both windows below the threshold.
 - On the trigger, the proxy retries the request on the next account in the plan. It does this before it sends anything to Claude Code.
 - The account is blocked until the reset time of the window that rejected it.
 - *Claude's call:* a rejection by a per-model window, such as Fable's weekly window, blocks only requests for that model on that account. Requests for other models stay on the account. A per-model block does not turn the menu bar pie red. That time comes from the reset header for that window, or else from the usage poll.
@@ -110,7 +111,7 @@ default_subscription_account: Personal
 ### Menu bar
 
 - One pie per account, in file order, filled in the account's colour. The pie shows the account's weekly (7d) usage. There are no letters.
-- The pie turns red when the account is blocked by its weekly limit, so it is full and red. The pie also turns red when the account's 5-hour limit blocks the account. Then the pie keeps showing the weekly percentage.
+- The pie turns red when the account is blocked by its weekly limit, so it is full and red. The pie also turns red when the account's 5-hour limit blocks the account. Then the pie keeps showing the weekly percentage. *Claude's call:* an account at or above `failover_utilization` also shows red, because the proxy no longer routes to it first.
 - Two red pies tell the user that neither account can take requests.
 - When the proxy does not answer, the menu bar keeps today's grey "!" dot.
 - The app keeps its refresh timing: once a minute, and every 5 seconds while the proxy does not answer.
