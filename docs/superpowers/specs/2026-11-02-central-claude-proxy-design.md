@@ -57,11 +57,14 @@ Claude Code ──CONNECT──▶ relay (127.0.0.1:4100) ──HTTPS upgrade─
 ### Central claude-proxy
 
 - A Docker container on docker-host runs the server. Its data directory, `CLAUDE_PROXY_DIRECTORY`, is a volume.
+- docker-host runs Docker 29.2.1 and has 312 GB free. Each app there is a compose project in `/root/<app>`, such as `/root/other_app`, with its settings in `.env` beside `docker-compose.yml`. Its image is built on docker-builder and pushed to `registry.example.com:5000`. The app publishes its port on the host, and a Moss proxy sends its domain to that port.
+- claude-proxy follows the same layout: `/root/claude-proxy/docker-compose.yml`, the image `registry.example.com:5000/claude-proxy:<commit>`, the named volume `claude-proxy-data`, `restart: always`, and port 4100 published on the host. Ports 3000 and 30080 are in use.
 - New setting `CLAUDE_PROXY_LISTEN_ADDRESS`. The container listens on `0.0.0.0`. The default stays `127.0.0.1`.
 - New setting `CLAUDE_PROXY_PUBLIC_HOSTNAME`, here `claude-proxy.example.com`. `isLocalRequest` also accepts that Host, and an Origin of `https://claude-proxy.example.com`.
 - New endpoint `GET /_proxy/tunnel` with `Upgrade: claude-proxy-tunnel`. The server answers `101` and gives the socket to `interceptedAnthropicApiServer`, the same path a `CONNECT` to `api.anthropic.com:443` takes today. The endpoint has no target parameter, so it can reach no other host.
 - The `CONNECT` listener stays for a local install. A public install does not need it.
 - The log goes to standard output in the container.
+- The Resume column of the Sessions tab reads `session_log_file_path` from `~/.claude/projects` on the machine that runs the proxy. The central service has no such directory, so it shows no log file path. The copied `claude --resume` command does not need it. The design removes the log file path and keeps the command.
 
 ### Logging in to a subscription account
 
@@ -105,15 +108,17 @@ moss proxy set-gateway-auth-team-id --domain claude-proxy.example.com --gateway-
 ## Cut-over
 
 1. Deploy the central claude-proxy with an empty volume, and check `https://claude-proxy.example.com/_proxy/` through Gateway Auth.
-2. Copy `~/.claude-proxy/requests.sqlite` (13 GB), `subscription_accounts.yml` and `pricing.yml` to the volume with rsync, while the first Mac proxy still runs.
+2. Copy `~/.claude-proxy/requests.sqlite` (1.6 GB after the request body parts migration), `subscription_accounts.yml` and `pricing.yml` to the volume with rsync, while the first Mac proxy still runs.
 3. Stop the first Mac proxy: `launchctl bootout gui/$(id -u)/local.claude-proxy.server`.
 4. Run rsync again. It copies only the changes since step 2. The WAL is checkpointed when the proxy stops, so `requests.sqlite` alone is complete.
 5. Change the project routes to absolute paths.
 6. Start the central claude-proxy. It now holds the grants. The first Mac proxy must not start again.
 7. Install the relay agent on the first Mac, and check one Claude Code session in the web UI.
-8. Install the relay on the second Mac and on each Roy host.
+8. Install the relay on the second Mac and on each Roy host. The second Mac has never run claude-proxy, so it has no history to merge.
 
 Requests between steps 3 and 7 go directly to Anthropic and are not recorded.
+
+The relay needs Node.js 23.6 or later. The Roy hosts move to Node.js 26 before the deployment.
 
 ## Tests
 
@@ -122,8 +127,3 @@ Requests between steps 3 and 7 go directly to Anthropic and are not recorded.
 - Gateway Auth: a known token, an unknown token, no header with a cookie, and a token of another team.
 - A spike before the plan: Caddy on the cluster passes `Upgrade: claude-proxy-tunnel` and copies bytes both ways.
 
-## Open questions
-
-1. How does docker-host run its containers? A compose file, a service manager, or something else? The answer sets where the Dockerfile and the volume go. Reading this needs the user's approval, because docker-host is a production server.
-2. Does the second Mac run claude-proxy with history of its own? Then its database has to merge into the central one, with new row IDs.
-3. Do the Roy hosts have Node.js 23.6 or later for the relay?
