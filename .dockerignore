@@ -1,0 +1,10 @@
+.git
+.superpowers
+.playwright-mcp
+node_modules
+**/node_modules
+**/dist
+macos
+launchd
+deploy
+.env

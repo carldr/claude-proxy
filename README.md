@@ -205,6 +205,10 @@ Open `http://127.0.0.1:4100/_proxy/`.
 
 The menu bar shows one pie per subscription account, in file order. Each pie has the colour of its account and shows the usage of its weekly window. A pie turns red when the proxy tries the account last after a rejection for its 5-hour or weekly window, or avoids it at its `failover_utilization` of either window. A pie is full and red when a weekly window blocks the account. When every pie is red, every account has rejected requests or is at its threshold. A grey `!` means the proxy does not answer. The app reads the status once a minute.
 
+## Run as a central service
+
+A container image and a compose file run the proxy on a server, for several machines. `deploy/README.md` gives the build, run and certificate authority steps.
+
 ## Commands
 
 | Command | Action |
@@ -225,6 +229,8 @@ packages/claude_proxy_server/   Node.js proxy, request database, subscription ac
 packages/claude_proxy_web_ui/   React web UI, served by the proxy under /_proxy/
 macos/claude_proxy_menu_bar/    SwiftUI menu bar app
 launchd/                        Scripts that install and remove the launchd agents
+deploy/                         Compose file and instructions for the central service
+Dockerfile                      The image of the central service
 ```
 
 ## Security
