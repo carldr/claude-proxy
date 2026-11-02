@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 import { extractClaudeCodeRequestContext } from './claude_code_request_context.ts';
@@ -82,9 +83,32 @@ const proxiedRequestSummaryColumns = `
   (SELECT COUNT(*) FROM upstream_attempts a WHERE a.proxied_request_id = r.id) AS upstream_attempt_count,
   substr(s.user_text, 1, 300) AS user_text_preview`;
 
+/** A top-level value of a request body whose JSON is shorter than this stays in the layout instead of becoming a part. */
+const shortestRequestBodyPartLength = 256;
+
+/** The setting that records that the whole request bodies of an earlier database are split into parts. */
+const requestBodyPartsSplitSettingName = 'request_body_parts_split';
+
+/** The number of rows that one transaction of the split changes. */
+const requestBodyPartsSplitBatchSize = 500;
+
 /**
- * Stores every proxied request in SQLite. Request and response bodies are compressed with zstd,
- * because Claude Code sends the whole conversation with each request.
+ * One top-level field of a request body, in a request body layout: `value` holds a short value itself, `part_id`
+ * names a part, and `message_part_ids` names one part for each entry of `messages`.
+ */
+type RequestBodyLayoutField =
+  | { field_name: string; value: unknown }
+  | { field_name: string; part_id: number }
+  | { field_name: string; message_part_ids: number[] };
+
+/**
+ * Stores every proxied request in SQLite. Request and response bodies are compressed with zstd.
+ *
+ * Claude Code sends the whole conversation with each request, so the messages, the tools, the system prompt and the
+ * safeguards of one request are mostly the same as those of the request before it. A JSON request body is therefore
+ * stored as parts in `request_body_parts`, one row for each distinct value, found by its SHA-256. The request row
+ * keeps only `request_body_layout_zstd`, the list of its fields and parts. A body that compact JSON does not rebuild
+ * byte for byte, such as a body with spaces after its colons, stays whole in `request_body_zstd`.
  */
 export class RequestDatabase {
   private readonly database: DatabaseSync;
@@ -121,7 +145,10 @@ export class RequestDatabase {
         cache_read_input_tokens INTEGER,
         estimated_cost_usd REAL,
         request_headers_json TEXT NOT NULL,
+        -- The whole body, for a body that request_body_layout_zstd cannot hold. At most one of the two is set.
         request_body_zstd BLOB,
+        -- The JSON list of the fields of a JSON body, each a short value or a reference to request_body_parts.
+        request_body_layout_zstd BLOB,
         response_headers_json TEXT,
         response_body_zstd BLOB,
         -- The request-id response header. Claude Code sends it back as cc_prev_req in the next request.
@@ -147,6 +174,13 @@ export class RequestDatabase {
       );
       CREATE INDEX IF NOT EXISTS upstream_attempts_proxied_request_id ON upstream_attempts (proxied_request_id);
 
+      -- One row for each distinct JSON value of the request bodies: a message, the tools, the system prompt.
+      CREATE TABLE IF NOT EXISTS request_body_parts (
+        id INTEGER PRIMARY KEY,
+        part_sha256 BLOB NOT NULL UNIQUE,
+        part_json_zstd BLOB NOT NULL
+      );
+
       -- rowid is proxied_requests.id. Each request repeats the whole conversation, so the index holds only what
       -- is new in each request: user_text is the last user message; tool_text is the tool results in that
       -- message plus the tool calls and thinking of the response; response_text is the text of the response.
@@ -159,6 +193,124 @@ export class RequestDatabase {
     `);
     this.addProjectPathInheritanceColumns();
     this.database.exec('CREATE INDEX IF NOT EXISTS proxied_requests_upstream_request_id ON proxied_requests (upstream_request_id)');
+    this.addRequestBodyLayoutColumn();
+    this.splitWholeRequestBodiesIntoParts();
+  }
+
+  /** Migrates a database made before `request_body_layout_zstd` existed. */
+  private addRequestBodyLayoutColumn(): void {
+    const columnNames = (this.database.prepare('PRAGMA table_info(proxied_requests)').all() as Array<{ name: string }>).map(
+      (column) => column.name,
+    );
+    if (columnNames.includes('request_body_layout_zstd')) return;
+    this.database.exec('ALTER TABLE proxied_requests ADD COLUMN request_body_layout_zstd BLOB');
+  }
+
+  /**
+   * Splits each whole request body of an earlier database into parts, in transactions of
+   * `requestBodyPartsSplitBatchSize` rows, so a stopped split continues at the next start. Then it runs VACUUM once,
+   * so the file gives back the space of the whole bodies.
+   */
+  private splitWholeRequestBodiesIntoParts(): void {
+    if (this.readSetting(requestBodyPartsSplitSettingName) !== null) return;
+
+    const readWholeRequestBodies = this.database.prepare(
+      'SELECT id, request_body_zstd FROM proxied_requests WHERE request_body_zstd IS NOT NULL AND id > ? ORDER BY id LIMIT ?',
+    );
+    const updateRequestBody = this.database.prepare(
+      'UPDATE proxied_requests SET request_body_zstd = NULL, request_body_layout_zstd = ? WHERE id = ?',
+    );
+    let lastProxiedRequestId = 0;
+    let splitRequestBodyCount = 0;
+    for (;;) {
+      const wholeRequestBodies = readWholeRequestBodies.all(lastProxiedRequestId, requestBodyPartsSplitBatchSize) as Array<{
+        id: number;
+        request_body_zstd: Uint8Array;
+      }>;
+      if (wholeRequestBodies.length === 0) break;
+      this.database.exec('BEGIN');
+      try {
+        for (const wholeRequestBody of wholeRequestBodies) {
+          const requestBodyLayout = this.storeRequestBodyParts(zstdDecompressSync(wholeRequestBody.request_body_zstd));
+          if (requestBodyLayout !== null) {
+            updateRequestBody.run(requestBodyLayout, wholeRequestBody.id);
+            splitRequestBodyCount += 1;
+          }
+        }
+        this.database.exec('COMMIT');
+      } catch (error) {
+        this.database.exec('ROLLBACK');
+        throw error;
+      }
+      lastProxiedRequestId = wholeRequestBodies[wholeRequestBodies.length - 1].id;
+      if (splitRequestBodyCount > 0) console.log(`Split the request bodies up to request ${lastProxiedRequestId} into parts.`);
+    }
+    if (splitRequestBodyCount > 0) {
+      console.log(`Split ${splitRequestBodyCount} request bodies into parts. VACUUM gives back their space.`);
+      this.database.exec('VACUUM');
+    }
+    this.writeSetting(requestBodyPartsSplitSettingName, new Date().toISOString());
+  }
+
+  /**
+   * Stores the parts of a JSON request body that are not stored already, and returns its compressed layout.
+   * Returns null for a body that compact JSON does not rebuild byte for byte. Such a body is stored whole.
+   */
+  private storeRequestBodyParts(requestBody: Buffer): Uint8Array | null {
+    const requestBodyText = requestBody.toString('utf8');
+    let parsedRequestBody: unknown;
+    try {
+      parsedRequestBody = JSON.parse(requestBodyText);
+    } catch {
+      return null;
+    }
+    if (typeof parsedRequestBody !== 'object' || parsedRequestBody === null || Array.isArray(parsedRequestBody)) return null;
+    if (JSON.stringify(parsedRequestBody) !== requestBodyText || !Buffer.from(requestBodyText).equals(requestBody)) return null;
+
+    const requestBodyLayout: RequestBodyLayoutField[] = Object.entries(parsedRequestBody).map(([fieldName, fieldValue]) => {
+      if (fieldName === 'messages' && Array.isArray(fieldValue)) {
+        return { field_name: fieldName, message_part_ids: fieldValue.map((message) => this.storeRequestBodyPart(JSON.stringify(message))) };
+      }
+      const fieldJson = JSON.stringify(fieldValue);
+      if (fieldJson.length < shortestRequestBodyPartLength) return { field_name: fieldName, value: fieldValue };
+      return { field_name: fieldName, part_id: this.storeRequestBodyPart(fieldJson) };
+    });
+    return zstdCompressSync(Buffer.from(JSON.stringify(requestBodyLayout)));
+  }
+
+  /** Returns the ID of the part with this JSON, and stores the part first when it is new. */
+  private storeRequestBodyPart(partJson: string): number {
+    const partSha256 = createHash('sha256').update(partJson).digest();
+    const storedPart = this.database.prepare('SELECT id FROM request_body_parts WHERE part_sha256 = ?').get(partSha256) as
+      | { id: number }
+      | undefined;
+    if (storedPart) return storedPart.id;
+    const insertResult = this.database
+      .prepare('INSERT INTO request_body_parts (part_sha256, part_json_zstd) VALUES (?, ?)')
+      .run(partSha256, zstdCompressSync(Buffer.from(partJson)));
+    return Number(insertResult.lastInsertRowid);
+  }
+
+  /** Rebuilds the text of a request body from its layout, or returns its whole stored text. */
+  private readRequestBodyText(requestBodyZstd: unknown, requestBodyLayoutZstd: unknown): string | null {
+    const requestBodyLayoutText = decompressText(requestBodyLayoutZstd);
+    if (requestBodyLayoutText === null) return decompressText(requestBodyZstd);
+
+    const readPart = this.database.prepare('SELECT part_json_zstd FROM request_body_parts WHERE id = ?');
+    const readPartJson = (partId: number): string => {
+      const part = readPart.get(partId) as { part_json_zstd: Uint8Array } | undefined;
+      if (!part) throw new Error(`Request body part ${partId} is missing.`);
+      return zstdDecompressSync(part.part_json_zstd).toString('utf8');
+    };
+    // JSON.stringify of an object joins `"name":value` with commas, so this rebuilds the compact JSON byte for byte.
+    const fieldJsons = (JSON.parse(requestBodyLayoutText) as RequestBodyLayoutField[]).map((layoutField) => {
+      let valueJson: string;
+      if ('message_part_ids' in layoutField) valueJson = `[${layoutField.message_part_ids.map(readPartJson).join(',')}]`;
+      else if ('part_id' in layoutField) valueJson = readPartJson(layoutField.part_id);
+      else valueJson = JSON.stringify(layoutField.value);
+      return `${JSON.stringify(layoutField.field_name)}:${valueJson}`;
+    });
+    return `{${fieldJsons.join(',')}}`;
   }
 
   /**
@@ -255,31 +407,42 @@ export class RequestDatabase {
       startedRequest.projectPath,
       startedRequest.previousUpstreamRequestId,
     );
-    const insertResult = this.database
-      .prepare(
-        `INSERT INTO proxied_requests (
-          started_at, http_method, request_path, client_auth_kind, model, is_streaming, session_id, project_path,
-          is_project_path_inherited, request_headers_json, request_body_zstd
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        startedRequest.startedAt,
-        startedRequest.httpMethod,
-        startedRequest.requestPath,
-        startedRequest.clientAuthKind,
-        startedRequest.model,
-        startedRequest.isStreaming ? 1 : 0,
-        startedRequest.sessionId,
-        projectPathAssignment.projectPath,
-        projectPathAssignment.isProjectPathInherited ? 1 : 0,
-        startedRequest.requestHeadersJson,
-        startedRequest.requestBody.length > 0 ? zstdCompressSync(startedRequest.requestBody) : null,
-      );
-    const proxiedRequestId = Number(insertResult.lastInsertRowid);
-    this.database
-      .prepare('INSERT INTO proxied_request_search (rowid, user_text, tool_text, response_text) VALUES (?, ?, ?, ?)')
-      .run(proxiedRequestId, startedRequest.lastUserMessageText, startedRequest.lastUserMessageToolResultText, '');
-    return proxiedRequestId;
+    this.database.exec('BEGIN');
+    try {
+      const hasRequestBody = startedRequest.requestBody.length > 0;
+      const requestBodyLayout = hasRequestBody ? this.storeRequestBodyParts(startedRequest.requestBody) : null;
+      const wholeRequestBody = hasRequestBody && requestBodyLayout === null ? zstdCompressSync(startedRequest.requestBody) : null;
+      const insertResult = this.database
+        .prepare(
+          `INSERT INTO proxied_requests (
+            started_at, http_method, request_path, client_auth_kind, model, is_streaming, session_id, project_path,
+            is_project_path_inherited, request_headers_json, request_body_zstd, request_body_layout_zstd
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          startedRequest.startedAt,
+          startedRequest.httpMethod,
+          startedRequest.requestPath,
+          startedRequest.clientAuthKind,
+          startedRequest.model,
+          startedRequest.isStreaming ? 1 : 0,
+          startedRequest.sessionId,
+          projectPathAssignment.projectPath,
+          projectPathAssignment.isProjectPathInherited ? 1 : 0,
+          startedRequest.requestHeadersJson,
+          wholeRequestBody,
+          requestBodyLayout,
+        );
+      const proxiedRequestId = Number(insertResult.lastInsertRowid);
+      this.database
+        .prepare('INSERT INTO proxied_request_search (rowid, user_text, tool_text, response_text) VALUES (?, ?, ?, ?)')
+        .run(proxiedRequestId, startedRequest.lastUserMessageText, startedRequest.lastUserMessageToolResultText, '');
+      this.database.exec('COMMIT');
+      return proxiedRequestId;
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   completeRequest(proxiedRequestId: number, completedRequest: CompletedProxiedRequest): void {
@@ -401,18 +564,23 @@ export class RequestDatabase {
   readProxiedRequest(proxiedRequestId: number): Record<string, unknown> | null {
     const requestRow = this.database
       .prepare(
-        `SELECT ${proxiedRequestSummaryColumns}, r.request_headers_json, r.request_body_zstd, r.response_headers_json,
-                r.response_body_zstd, s.user_text, s.tool_text, s.response_text
+        `SELECT ${proxiedRequestSummaryColumns}, r.request_headers_json, r.request_body_zstd, r.request_body_layout_zstd,
+                r.response_headers_json, r.response_body_zstd, s.user_text, s.tool_text, s.response_text
          FROM proxied_requests r JOIN proxied_request_search s ON s.rowid = r.id
          WHERE r.id = ?`,
       )
       .get(proxiedRequestId) as Record<string, unknown> | undefined;
     if (!requestRow) return null;
 
-    const { request_body_zstd: requestBodyZstd, response_body_zstd: responseBodyZstd, ...requestFields } = requestRow;
+    const {
+      request_body_zstd: requestBodyZstd,
+      request_body_layout_zstd: requestBodyLayoutZstd,
+      response_body_zstd: responseBodyZstd,
+      ...requestFields
+    } = requestRow;
     return {
       ...requestFields,
-      request_body: decompressText(requestBodyZstd),
+      request_body: this.readRequestBodyText(requestBodyZstd, requestBodyLayoutZstd),
       response_body: decompressText(responseBodyZstd),
       upstream_attempts: this.database
         .prepare('SELECT * FROM upstream_attempts WHERE proxied_request_id = ? ORDER BY attempt_number')

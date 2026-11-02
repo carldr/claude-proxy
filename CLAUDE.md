@@ -26,7 +26,9 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:4199 claude -p "Reply with the single word: 
 
 - Node runs the TypeScript source directly with type stripping, so the server has no build step. `tsconfig.json` sets `erasableSyntaxOnly`. Do not use parameter properties, enums or namespaces. Import with `.ts` extensions, and use `import type` for types.
 - The database is `node:sqlite`. Bodies are compressed with `node:zlib` zstd. Do not add `better-sqlite3`.
-- `RequestDatabase` creates its schema with `CREATE ... IF NOT EXISTS` and has no migrations. `~/.claude-proxy/requests.sqlite` holds real data, so a schema change needs an explicit migration.
+- `RequestDatabase` creates its schema with `CREATE ... IF NOT EXISTS`. `~/.claude-proxy/requests.sqlite` holds real data, so a schema change needs an explicit migration in the constructor, such as `addRequestBodyLayoutColumn`.
+- A JSON request body is stored as parts. Each top-level field of 256 characters of JSON or more, and each entry of `messages`, is one row of `request_body_parts`, found by its SHA-256. `request_body_layout_zstd` lists the fields and their parts. A body that compact `JSON.stringify` does not rebuild byte for byte stays whole in `request_body_zstd`. At most one of the two columns is set.
+- `splitWholeRequestBodiesIntoParts` splits the whole bodies of an earlier database once, at start, in transactions of 500 rows, then runs VACUUM. The setting `request_body_parts_split` records that it finished.
 
 ## Request flow
 
