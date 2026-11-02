@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-claude-proxy is a local proxy for Claude Code on `127.0.0.1:4100`. It records `/v1/messages`, `/v1/messages/count_tokens`, `/v1/models` and `/api/hello` in SQLite, and forwards every other path unrecorded. It sends each project's `/v1/messages` requests to one of several Claude subscription accounts, and moves a request to another account when an account is at a limit. `README.md` describes the behaviour for users.
+claude-proxy is a proxy for Claude Code. It runs locally on `127.0.0.1:4100`, or as one central service that a relay on each machine reaches through `/_proxy/tunnel`. It records `/v1/messages`, `/v1/messages/count_tokens`, `/v1/models` and `/api/hello` in SQLite, and forwards every other path unrecorded. It sends each project's `/v1/messages` requests to one of several Claude subscription accounts, and moves a request to another account when an account is at a limit. `README.md` describes the behaviour for users.
 
 ## Commands
 

@@ -1,6 +1,6 @@
 # claude-proxy
 
-claude-proxy is a local proxy between Claude Code and the Anthropic API. It records Claude Code's Messages API requests in SQLite. It also sends each project's requests to the Claude subscription account that you chose for that project. When an account reaches a limit, the proxy moves the request to your other account. Claude Code does not see the change.
+claude-proxy is a proxy between Claude Code and the Anthropic API. It runs on one machine, or as one central service for all your machines. It records Claude Code's Messages API requests in SQLite. It also sends each project's requests to the Claude subscription account that you chose for that project. When an account reaches a limit, the proxy moves the request to your other account. Claude Code does not see the change.
 
 ![The claude-proxy web UI: account usage, recorded requests and their details](docs/web_ui_requests.png)
 
@@ -266,7 +266,33 @@ The menu bar shows one pie per subscription account, in file order. Each pie has
 
 ## Run as a central service
 
-A container image and a compose file run the proxy on a server, for several machines. `deploy/README.md` gives the build, run and certificate authority steps.
+A central claude-proxy serves every machine of one user. It runs as a Docker container on docker-host. The container listens on `0.0.0.0` and publishes port 4100. `deploy/README.md` gives the build, run and certificate authority steps.
+
+| Setting | Meaning |
+| --- | --- |
+| `CLAUDE_PROXY_PUBLIC_HOSTNAME` | The public name of the service, here `claude-proxy.example.com`. The proxy accepts requests with that Host. |
+| `CLAUDE_PROXY_LISTEN_ADDRESS` | The address that the proxy listens on. The default is `127.0.0.1`. The image sets `0.0.0.0`. |
+| `CLAUDE_PROXY_GATEWAY_AUTH_VERIFY_URL` | The `/verify` URL of Gateway Auth with its `team_id`. See [Security](#security). |
+
+A Moss proxy sends the public hostname to the container. Caddy in front of it calls Gateway Auth for each request: a browser logs in with a cookie, and the relay sends its token in `X-Gateway-Auth-Token`. Caddy cannot carry a `CONNECT` tunnel, so the relay sends an HTTP upgrade to `/_proxy/tunnel` in its place.
+
+Open `https://<public hostname>/_proxy/` for the web UI. The subscription accounts, their grants and the recorded requests live in the `claude-proxy-data` volume. Log in to the accounts from the web UI. See [Log in to the subscription accounts](#log-in-to-the-subscription-accounts).
+
+### Cut over from a local proxy
+
+Never run two servers with the same grants. A refresh revokes the previous access token of the grant, so two servers that refresh one grant log each other out. Follow these steps in order.
+
+1. Deploy the central service with an empty volume, and open `https://<public hostname>/_proxy/` through Gateway Auth.
+2. Copy `requests.sqlite`, `subscription_accounts.yml` and `pricing.yml` from `~/.claude-proxy` to the volume with rsync. The local proxy keeps running.
+3. Stop the local proxy: `launchctl bootout gui/$(id -u)/local.claude-proxy.server`.
+4. Run rsync again. It copies only the changes since step 2.
+5. Change each `project_path_pattern` to an absolute path.
+6. Start the central service. It now holds the grants. Never start the local proxy again.
+7. Install the relay on the machine, and check one Claude Code session in the web UI.
+8. Install the relay on every other machine.
+9. Delete `~/.claude-proxy/api.anthropic.com*.pem` on the machine that ran the local proxy, because the relay now uses the central certificate.
+
+Requests between steps 3 and 7 go directly to Anthropic and are not recorded.
 
 ## Relay
 
