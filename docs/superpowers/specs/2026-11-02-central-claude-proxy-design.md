@@ -103,7 +103,7 @@ moss proxy add --domain claude-proxy.example.com --vm-name docker-host --target-
 moss proxy set-gateway-auth-team-id --domain claude-proxy.example.com --gateway-auth-team-id <id of gateway-auth-claude-proxy>
 ```
 
-`moss proxy add` opens the firewall rule for the target port from the cluster's hosts. The proxy row needs `streaming` on and no timeout, because a tunnel lasts as long as a Claude Code connection.
+`moss proxy add` opens the firewall rule for the target port from the cluster's hosts. Caddy copies the bytes of an upgraded connection without the `streaming` setting, so the proxy row keeps the defaults.
 
 ## Cut-over
 
