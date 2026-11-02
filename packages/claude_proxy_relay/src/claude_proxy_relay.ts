@@ -17,6 +17,8 @@ export const claudeProxyTunnelUpgradeToken = 'claude-proxy-tunnel';
 
 /** The menu bar app reads this path from the relay, and the relay reads it from the central claude-proxy. */
 export const subscriptionAccountStatusPath = '/_proxy/api/subscription-account-status';
+/** The relay answers this path itself, with no request to the central claude-proxy. The launch check of a shell function reads it. */
+export const relayStatusPath = '/_proxy/relay-status';
 /** The central claude-proxy serves the public certificate of its certificate authority at this path. */
 export const certificateAuthorityPath = '/_proxy/certificate_authority.pem';
 /** The file in the relay directory that holds the central certificate authority. Claude Code reads it through `NODE_EXTRA_CA_CERTS`. */
@@ -340,8 +342,10 @@ export function createClaudeProxyRelay(options: ClaudeProxyRelayOptions): Claude
         .end(`claude-proxy-relay needs the user ${relayProxyCredentialUserName} and the credential in ${relayProxyCredentialFileName}.\n`);
     } else if (clientRequest.method === 'GET' && (clientRequest.url ?? '').split('?')[0] === subscriptionAccountStatusPath) {
       forwardSubscriptionAccountStatus(clientResponse);
+    } else if (clientRequest.method === 'GET' && (clientRequest.url ?? '').split('?')[0] === relayStatusPath) {
+      clientResponse.writeHead(200, { 'content-type': 'application/json' }).end('{"relay":"ok"}');
     } else {
-      clientResponse.writeHead(404, { 'content-type': 'text/plain' }).end(`claude-proxy-relay serves only ${subscriptionAccountStatusPath} and CONNECT.\n`);
+      clientResponse.writeHead(404, { 'content-type': 'text/plain' }).end(`claude-proxy-relay serves only ${subscriptionAccountStatusPath}, ${relayStatusPath} and CONNECT.\n`);
     }
   });
 

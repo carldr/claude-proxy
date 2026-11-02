@@ -370,6 +370,23 @@ describe('claude_proxy_relay', () => {
     assert.equal((await getFromRelay(relayPort, '/_proxy/api/subscription-account-status', relayHost)).statusCode, 200);
   });
 
+  test('answers the relay status itself, without a request to the central claude-proxy', async () => {
+    const fakeCentralService = await startCentral('switch_protocols_and_echo');
+    const { relayPort } = await startRelay(fakeCentralService.url);
+    const relayStatusAnswer = await getFromRelay(relayPort, '/_proxy/relay-status');
+    assert.deepEqual({ statusCode: relayStatusAnswer.statusCode, body: relayStatusAnswer.body }, { statusCode: 200, body: '{"relay":"ok"}' });
+    assert.equal(fakeCentralService.receivedRequests.filter((receivedRequest) => receivedRequest.path === '/_proxy/relay-status').length, 0);
+    assert.equal(fakeCentralService.receivedRequests.filter((receivedRequest) => receivedRequest.path.startsWith('/_proxy/api/')).length, 0);
+  });
+
+  test('refuses the relay status request without the credential', async () => {
+    const fakeCentralService = await startCentral('switch_protocols_and_echo');
+    const { relayPort } = await startRelay(fakeCentralService.url);
+    const refusedAnswer = await getFromRelay(relayPort, '/_proxy/relay-status', `127.0.0.1:${relayPort}`, null);
+    assert.equal(refusedAnswer.statusCode, 401);
+    assert.equal((await getFromRelay(relayPort, '/_proxy/relay-status', 'attacker.example')).statusCode, 403);
+  });
+
   test('answers 404 to every other request', async () => {
     const fakeCentralService = await startCentral('switch_protocols_and_echo');
     const { relayPort } = await startRelay(fakeCentralService.url);

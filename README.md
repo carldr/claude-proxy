@@ -57,7 +57,7 @@ These steps install the relay on a Mac. The relay connects Claude Code to a cent
    sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ~/.claude-proxy-relay/certificate_authority.pem
    ```
 
-6. Point Claude Code at the relay with one of the methods in [Connecting Claude Code](#connecting-claude-code).
+6. Point Claude Code at the relay with one of the methods in [Connecting Claude Code](#connecting-claude-code). Start Claude Code only after step 5, because the relay downloads the certificate authority at step 4 and the keychain trusts it only after step 5.
 
 Run `pnpm install_launchd_agents` again after a Node.js upgrade, because the agents store the path to `node`.
 
@@ -136,7 +136,7 @@ function claude() {
 
 	if [[ -z "$HTTPS_PROXY$ANTHROPIC_BASE_URL" ]] &&
 		print -r -- "$curl_configuration" |
-			curl --config - --silent --fail --max-time 1 --output /dev/null "http://$claude_proxy_address/_proxy/api/subscription-account-status"
+			curl --config - --silent --fail --max-time 1 --output /dev/null "http://$claude_proxy_address/_proxy/relay-status"
 	then
 		HTTPS_PROXY="$claude_proxy_url" NO_PROXY="localhost,127.0.0.1" NODE_EXTRA_CA_CERTS="$certificate_authority_file" \
 			command claude "$@"
@@ -160,7 +160,7 @@ Add these keys to the `env` object. Replace `/Users/you` with your home director
 }
 ```
 
-With the relay, use the credential URL and the relay's certificate authority. Replace `<credential>` with the contents of `~/.claude-proxy-relay/proxy_credential`:
+With the relay, use the credential URL and the relay's certificate authority. Replace `<credential>` with the contents of `~/.claude-proxy-relay/proxy_credential`. Then run `chmod 600 ~/.claude/settings.json`, because the file now holds the credential and is not private by default. On a host with several users, use the [zsh function](#zsh-function) in place of this method:
 
 ```json
 {
@@ -283,16 +283,17 @@ Open `https://<public hostname>/_proxy/` for the web UI. The subscription accoun
 Never run two servers with the same grants. A refresh revokes the previous access token of the grant, so two servers that refresh one grant log each other out. Keep the central container stopped from the first copy of the files until the local server is stopped. Follow these steps in order.
 
 1. Deploy the central service with an empty volume, as `deploy/README.md` describes. Make the certificate authority, and open `https://<public hostname>/_proxy/` through Gateway Auth. Then stop the container: `docker compose stop`.
-2. Copy `requests.sqlite`, `subscription_accounts.yml` and `pricing.yml` from `~/.claude-proxy` into the directory of the `claude-proxy-data` volume with rsync. The local proxy keeps running, and the container stays stopped.
-3. Stop the local proxy: `launchctl bootout gui/$(id -u)/local.claude-proxy.server`.
-4. Run rsync again. It copies only the changes since step 2. Then run `chown 1000:1000` and `chmod 600` on the copied files, because the container runs as the user `node` and the server refuses files that another user owns.
-5. Change each `project_path_pattern` to an absolute path in the copy of `subscription_accounts.yml` on the volume.
-6. Start the container: `docker compose start`. It now holds the grants. Never start the local proxy again.
-7. Install the relay on the machine, and check one Claude Code session in the web UI.
-8. Install the relay on every other machine.
-9. Delete `~/.claude-proxy/api.anthropic.com*.pem` on the machine that ran the local proxy, because the relay now uses the central certificate.
+2. Delete `requests.sqlite-wal` and `requests.sqlite-shm` from the directory of the `claude-proxy-data` volume, if they exist, because SQLite would apply the log of the empty database to the copied file and corrupt it. Stop and report if they exist after `docker compose stop`. Then copy `requests.sqlite`, `subscription_accounts.yml` and `pricing.yml` from `~/.claude-proxy` into that directory with rsync. The local proxy keeps running, and the container stays stopped.
+3. Quit every Claude Code session on the machine that runs the local proxy. A running session keeps `HTTPS_PROXY=http://127.0.0.1:4100` and sends no credential. After the server stops it gets connection refused, and after the relay starts it gets 407. It never connects directly.
+4. Stop the local proxy: `launchctl bootout gui/$(id -u)/local.claude-proxy.server`.
+5. Run rsync again. It copies only the changes since step 2. Then run `chown 1000:1000` and `chmod 600` on the copied files, because the container runs as the user `node` and the server refuses files that another user owns.
+6. Change each `project_path_pattern` to an absolute path in the copy of `subscription_accounts.yml` on the volume.
+7. Start the container: `docker compose start`. It now holds the grants. Never start the local proxy again.
+8. Install the relay on the machine, and check one Claude Code session in the web UI. A session that starts after the relay install uses the relay.
+9. Install the relay on every other machine.
+10. Delete `~/.claude-proxy/api.anthropic.com*.pem` on the machine that ran the local proxy, because the relay now uses the central certificate.
 
-Requests between steps 3 and 7 go directly to Anthropic and are not recorded.
+Between steps 4 and 8, a new Claude Code session started with the zsh function connects directly to Anthropic, and nothing records its requests. A session started with another method fails.
 
 ## Relay
 
@@ -313,7 +314,7 @@ At each start, the relay downloads the central certificate authority to `certifi
 
 For each `CONNECT api.anthropic.com:443`, the relay opens a tunnel to the central proxy's `/_proxy/tunnel`, with your token in `X-Gateway-Auth-Token`. The central proxy decrypts and records the connection. Until `certificate_authority.pem` exists, the relay connects to `api.anthropic.com` directly, because Claude Code cannot trust the central proxy without it. The relay also connects directly when the central proxy gives no 101 to `claude-proxy-tunnel` within 5 seconds. Claude Code then uses its own login, and nothing records the requests. The relay logs one line for each fallback, at most once a minute. The relay connects every other CONNECT target from your machine.
 
-The menu bar app reads `/_proxy/api/subscription-account-status` from the relay. The relay gets it from the central proxy, and answers 502 when the central proxy fails. Every other request gets 404. The relay accepts requests only from a loopback address, with the Host `127.0.0.1` or `localhost` on its port, and with the credential.
+The menu bar app reads `/_proxy/api/subscription-account-status` from the relay. The relay gets it from the central proxy, and answers 502 when the central proxy fails. The relay answers `/_proxy/relay-status` itself with 200 and `{"relay":"ok"}`, and makes no request to the central proxy. The zsh function uses this path as its launch check. Every other request gets 404. The relay accepts requests only from a loopback address, with the Host `127.0.0.1` or `localhost` on its port, and with the credential.
 
 ## Roy host
 
