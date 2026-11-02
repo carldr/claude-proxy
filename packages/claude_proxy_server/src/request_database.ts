@@ -227,6 +227,8 @@ export class RequestDatabase {
     if (hasSplitRequestBodies || hasCompressedHeaders || hasMovedSearchText) {
       console.log('VACUUM gives back the space of the migrated request contents.');
       this.database.exec('VACUUM');
+      // VACUUM writes the whole new file through the WAL. The checkpoint copies it into the database and empties the WAL file.
+      this.database.exec('PRAGMA wal_checkpoint(TRUNCATE)');
     }
   }
 
