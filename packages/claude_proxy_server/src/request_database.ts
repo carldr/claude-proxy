@@ -167,10 +167,7 @@ export class RequestDatabase {
         -- When expireRequestContentsStartedBefore deleted the headers, bodies and search text of the request.
         contents_expired_at TEXT
       );
-      CREATE INDEX IF NOT EXISTS proxied_requests_started_at ON proxied_requests (started_at);
-      CREATE INDEX IF NOT EXISTS proxied_requests_session_id ON proxied_requests (session_id);
       CREATE INDEX IF NOT EXISTS proxied_requests_project_path ON proxied_requests (project_path);
-      CREATE INDEX IF NOT EXISTS proxied_requests_model ON proxied_requests (model);
       CREATE INDEX IF NOT EXISTS proxied_requests_route_name ON proxied_requests (route_name);
 
       CREATE TABLE IF NOT EXISTS upstream_attempts (
@@ -221,6 +218,7 @@ export class RequestDatabase {
       this.addMissingColumn('proxied_requests', columnName, columnType);
     }
     this.addMissingColumn('request_body_parts', 'part_last_used_on', 'TEXT');
+    this.createQueryIndexes();
     const hasSplitRequestBodies = this.splitWholeRequestBodiesIntoParts();
     const hasCompressedHeaders = this.compressPlainHeaders();
     const hasMovedSearchText = this.moveSearchTextToContentlessIndex();
@@ -230,6 +228,31 @@ export class RequestDatabase {
       // VACUUM writes the whole new file through the WAL. The checkpoint copies it into the database and empties the WAL file.
       this.database.exec('PRAGMA wal_checkpoint(TRUNCATE)');
     }
+  }
+
+  /**
+   * Creates the indexes that let the queries of the web UI and of the expiry read an index instead of the table,
+   * and drops the indexes that they replace. Each index names the query it serves.
+   */
+  private createQueryIndexes(): void {
+    this.database.exec(`
+      DROP INDEX IF EXISTS proxied_requests_model;
+      DROP INDEX IF EXISTS proxied_requests_started_at;
+      DROP INDEX IF EXISTS proxied_requests_session_id;
+      -- listRequestFilterOptions groups by model with MAX(started_at), and the model filter matches model.
+      CREATE INDEX IF NOT EXISTS proxied_requests_model_started_at ON proxied_requests (model, started_at);
+      -- summariseProxiedRequestCosts sums estimated_cost_usd by started_at, and the date filters match started_at.
+      CREATE INDEX IF NOT EXISTS proxied_requests_started_at_estimated_cost_usd ON proxied_requests (started_at, estimated_cost_usd);
+      -- listSessions groups every request by session_id, and assignProjectPath finds a request of a session.
+      CREATE INDEX IF NOT EXISTS proxied_requests_session_id_started_at ON proxied_requests (
+        session_id, started_at, project_path, estimated_cost_usd
+      );
+      -- expireRequestContentsStartedBefore finds the oldest requests whose contents it has not deleted.
+      CREATE INDEX IF NOT EXISTS proxied_requests_contents_not_expired_started_at ON proxied_requests (started_at)
+        WHERE contents_expired_at IS NULL;
+      -- expireRequestContentsStartedBefore deletes the parts that no kept request uses.
+      CREATE INDEX IF NOT EXISTS request_body_parts_part_last_used_on ON request_body_parts (part_last_used_on);
+    `);
   }
 
   /** Migrates a database made before the column existed. */
@@ -634,7 +657,7 @@ export class RequestDatabase {
   expireRequestContentsStartedBefore(startedBefore: string): number {
     const expiredAt = new Date().toISOString();
     const readExpiringRequestIds = this.database.prepare(
-      'SELECT id FROM proxied_requests WHERE started_at < ? AND contents_expired_at IS NULL ORDER BY id LIMIT ?',
+      'SELECT id FROM proxied_requests WHERE started_at < ? AND contents_expired_at IS NULL ORDER BY started_at LIMIT ?',
     );
     const expireRequestContents = this.database.prepare(
       `UPDATE proxied_requests SET request_headers_json_zstd = NULL, request_body_zstd = NULL, request_body_layout_zstd = NULL,
