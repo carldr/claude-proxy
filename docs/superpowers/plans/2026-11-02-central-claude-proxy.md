@@ -22,7 +22,7 @@
 - The CA permits only the name `api.anthropic.com`. Its key never leaves the central volume.
 - Gateway Auth team: `gateway-auth-claude-proxy`. Commands and scripts take the team name and find its ID.
 - Team pref `gateway_auth_tokens` is a JSON string of `[{ "name", "sha256", "created_at" }]`, beside `allowed_domains`. `updatePrefs` replaces the whole object.
-- docker-host: compose project `/root/claude-proxy`, image `registry.example.com:5000/claude-proxy:<commit>`, volume `claude-proxy-data`, `restart: always`, host port 4100.
+- docker-host: compose project `/root/claude-proxy`, image `registry.example.com:5000/claude-proxy:<commit>`, data directory `/root/claude-proxy/data` mounted at `/data`, `restart: always`, host port 4100.
 - Never run two servers that hold the same grants. After the cut-over, the first Mac server agent never starts again.
 - Commit each task when its tests pass, staging files by name.
 
@@ -156,7 +156,7 @@ Ruling: every install uses the manual redirect URI, so there is one login flow. 
 - Create: `Dockerfile`, `.dockerignore`, `deploy/docker-compose.yml`, `deploy/README.md`
 
 **Interfaces:**
-- Produces: image with `CLAUDE_PROXY_DIRECTORY=/data`, `CLAUDE_PROXY_LISTEN_ADDRESS=0.0.0.0`, `CLAUDE_PROXY_PORT=4100`, `USER node`, `CMD ["node", "packages/claude_proxy_server/src/main.ts"]`. The compose service `claude_proxy` sets `CLAUDE_PROXY_PUBLIC_HOSTNAME=claude-proxy.example.com` and `CLAUDE_PROXY_GATEWAY_AUTH_VERIFY_URL` (Task 13; the value goes in `.env` beside the compose file), mounts `claude-proxy-data:/data`, publishes `4100:4100`, `restart: always`, and has a healthcheck on `http://127.0.0.1:4100/_proxy/api/subscription-account-status`, a loopback request from inside the container.
+- Produces: image with `CLAUDE_PROXY_DIRECTORY=/data`, `CLAUDE_PROXY_LISTEN_ADDRESS=0.0.0.0`, `CLAUDE_PROXY_PORT=4100`, `USER node`, `CMD ["node", "packages/claude_proxy_server/src/main.ts"]`. The compose service `claude_proxy` sets `CLAUDE_PROXY_PUBLIC_HOSTNAME=claude-proxy.example.com` and `CLAUDE_PROXY_GATEWAY_AUTH_VERIFY_URL` (Task 13; the value goes in `.env` beside the compose file), mounts `./data:/data`, publishes `4100:4100`, `restart: always`, and has a healthcheck on `http://127.0.0.1:4100/_proxy/api/subscription-account-status`, a loopback request from inside the container.
 
 - [ ] **Step 1: Write the files.** The build stage is `node:26-slim` with corepack's pnpm. It installs with `--frozen-lockfile` and runs `pnpm --filter claude_proxy_web_ui build`, not `pnpm build`, which also builds the macOS menu bar. The run stage installs `openssl` with `apt-get install -y --no-install-recommends`, and copies `packages/`, `scripts/` and `node_modules`. `deploy/README.md` gives the build and push commands in the other_app layout:
 
@@ -301,11 +301,11 @@ Each step is a command with a check. Stop and report on any failed check.
 - [ ] **Step 6:** Check Review Focus 1. With the first Mac token, the Task 8 relay test client against `https://claude-proxy.example.com` gets `101`. A wrong token gets no `101`.
 - [ ] **Step 7:** Cut-over, design section "Cut-over" steps 1–7. The container stays stopped from the first copy until the first Mac server agent is stopped.
   1. Run `docker compose stop` in `/root/claude-proxy`. Check with `docker compose ps` that it is stopped.
-  2. Delete `requests.sqlite-wal` and `requests.sqlite-shm` from the volume's directory, or stop and report if they exist after Sub-step 1. Then rsync `requests.sqlite`, `subscription_accounts.yml` and `pricing.yml` to the volume's directory, `docker volume inspect claude-proxy-data --format '{{.Mountpoint}}'`, while the first Mac proxy runs.
+  2. Delete `requests.sqlite-wal` and `requests.sqlite-shm` from `/root/claude-proxy/data`, or stop and report if they exist after Sub-step 1. Then rsync `requests.sqlite`, `subscription_accounts.yml` and `pricing.yml` to `/root/claude-proxy/data` while the first Mac proxy runs.
   3. Quit every Claude Code session on the first Mac. A running session keeps `HTTPS_PROXY=http://127.0.0.1:4100` with no credential, so it gets connection refused after the stop and 407 after the relay starts.
   4. Run `launchctl bootout gui/$(id -u)/local.claude-proxy.server`.
   5. rsync again, then `chown 1000:1000` and `chmod 600` the copied files. The server refuses files that another user owns, and the container runs as `node` (UID 1000).
-  6. Change the routes to absolute paths in the copy of `subscription_accounts.yml` on the volume.
+  6. Change the routes to absolute paths in the copy of `subscription_accounts.yml` in `/root/claude-proxy/data`.
   7. Run `docker compose start`.
 - [ ] **Step 8:** Install the relay agent on the first Mac (`pnpm install_launchd_agents`). A session that starts after the install uses the relay. Check that one new Claude Code request shows in the web UI with its project, and that the menu bar shows the pies.
 - [ ] **Step 9:** Install the relay on the second Mac (Task 9 launchd) and on roy-host (the systemd unit, through the Roy dotfiles). Check one request from each in the web UI.

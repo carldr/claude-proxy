@@ -9,8 +9,9 @@ services:
     environment:
       CLAUDE_PROXY_PUBLIC_HOSTNAME: claude-proxy.example.com
       CLAUDE_PROXY_GATEWAY_AUTH_VERIFY_URL: ${CLAUDE_PROXY_GATEWAY_AUTH_VERIFY_URL}
+    # /data is /root/claude-proxy/data on docker-host, owned by UID 1000 (node) with mode 700.
     volumes:
-      - claude-proxy-data:/data
+      - ./data:/data
     # The server accepts the loopback Host only from a loopback address, so the check runs inside the container.
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4100/_proxy/api/subscription-account-status').then((response) => process.exit(response.ok ? 0 : 1), () => process.exit(1))"]
@@ -18,6 +19,3 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
-
-volumes:
-  claude-proxy-data:

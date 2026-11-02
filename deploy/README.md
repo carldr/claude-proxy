@@ -20,7 +20,7 @@ docker --host ssh://docker-builder push localhost:5000/claude-proxy:${commit:0:7
 
 ## Run the service
 
-1. Copy `docker-compose.yml` to `/root/claude-proxy` on docker-host.
+1. Copy `docker-compose.yml` to `/root/claude-proxy` on docker-host. Make the data directory: `mkdir /root/claude-proxy/data && chown 1000:1000 /root/claude-proxy/data && chmod 700 /root/claude-proxy/data`.
 2. Make `/root/claude-proxy/.env` with these two lines. Replace `<commit>` and the verify URL.
 
    ```sh
@@ -69,7 +69,7 @@ pnpm --silent --filter gateway-auth tokens add gateway-auth-claude-proxy <machin
 2. Change `CLAUDE_PROXY_IMAGE` in `.env` to the new tag.
 3. Run `docker compose up -d` in `/root/claude-proxy`.
 
-The `claude-proxy-data` volume keeps `/data`, which holds the database, the grants of the subscription accounts and the certificates.
+`/root/claude-proxy/data` on docker-host is `/data` in the container. It holds the database, the grants of the subscription accounts and the certificates. It must be owned by UID 1000, the user `node`, with mode 700.
 
 ## Files
 

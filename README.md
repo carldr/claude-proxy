@@ -276,18 +276,18 @@ A central claude-proxy serves every machine of one user. It runs as a Docker con
 
 A Moss proxy sends the public hostname to the container. Caddy in front of it calls Gateway Auth for each request: a browser logs in with a cookie, and the relay sends its token in `X-Gateway-Auth-Token`. Caddy cannot carry a `CONNECT` tunnel, so the relay sends an HTTP upgrade to `/_proxy/tunnel` in its place.
 
-Open `https://<public hostname>/_proxy/` for the web UI. The subscription accounts, their grants and the recorded requests live in the `claude-proxy-data` volume. Log in to the accounts from the web UI. See [Log in to the subscription accounts](#log-in-to-the-subscription-accounts).
+Open `https://<public hostname>/_proxy/` for the web UI. The subscription accounts, their grants and the recorded requests live in `/root/claude-proxy/data` on docker-host. Log in to the accounts from the web UI. See [Log in to the subscription accounts](#log-in-to-the-subscription-accounts).
 
 ### Cut over from a local proxy
 
 Never run two servers with the same grants. A refresh revokes the previous access token of the grant, so two servers that refresh one grant log each other out. Keep the central container stopped from the first copy of the files until the local server is stopped. Follow these steps in order.
 
-1. Deploy the central service with an empty volume, as `deploy/README.md` describes. Make the certificate authority, and open `https://<public hostname>/_proxy/` through Gateway Auth. Then stop the container: `docker compose stop`.
-2. Delete `requests.sqlite-wal` and `requests.sqlite-shm` from the directory of the `claude-proxy-data` volume, if they exist, because SQLite would apply the log of the empty database to the copied file and corrupt it. Stop and report if they exist after `docker compose stop`. Then copy `requests.sqlite`, `subscription_accounts.yml` and `pricing.yml` from `~/.claude-proxy` into that directory with rsync. The local proxy keeps running, and the container stays stopped.
+1. Deploy the central service with an empty data directory, as `deploy/README.md` describes. Make the certificate authority, and open `https://<public hostname>/_proxy/` through Gateway Auth. Then stop the container: `docker compose stop`.
+2. Delete `requests.sqlite-wal` and `requests.sqlite-shm` from `/root/claude-proxy/data`, if they exist, because SQLite would apply the log of the empty database to the copied file and corrupt it. Stop and report if they exist after `docker compose stop`. Then copy `requests.sqlite`, `subscription_accounts.yml` and `pricing.yml` from `~/.claude-proxy` into that directory with rsync. The local proxy keeps running, and the container stays stopped.
 3. Quit every Claude Code session on the machine that runs the local proxy. A running session keeps `HTTPS_PROXY=http://127.0.0.1:4100` and sends no credential. After the server stops it gets connection refused, and after the relay starts it gets 407. It never connects directly.
 4. Stop the local proxy: `launchctl bootout gui/$(id -u)/local.claude-proxy.server`.
 5. Run rsync again. It copies only the changes since step 2. Then run `chown 1000:1000` and `chmod 600` on the copied files, because the container runs as the user `node` and the server refuses files that another user owns.
-6. Change each `project_path_pattern` to an absolute path in the copy of `subscription_accounts.yml` on the volume.
+6. Change each `project_path_pattern` to an absolute path in the copy of `subscription_accounts.yml` in `/root/claude-proxy/data`.
 7. Start the container: `docker compose start`. It now holds the grants. Never start the local proxy again.
 8. Install the relay on the machine, and check one Claude Code session in the web UI. A session that starts after the relay install uses the relay.
 9. Install the relay on every other machine.

@@ -19,7 +19,7 @@ COPY --from=build /app/package.json ./
 COPY --from=build /app/node_modules node_modules
 COPY --from=build /app/packages packages
 COPY scripts scripts
-# A new named volume at /data copies this owner. The server refuses to start when another user owns its directory.
+# The server refuses to start when another user owns its directory, so a directory mounted at /data must belong to node (UID 1000).
 RUN mkdir /data && chown node:node /data
 ENV CLAUDE_PROXY_DIRECTORY=/data \
   CLAUDE_PROXY_LISTEN_ADDRESS=0.0.0.0 \
