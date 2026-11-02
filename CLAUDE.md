@@ -37,7 +37,7 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:4199 claude -p "Reply with the single word: 
 
 Claude Code reaches the proxy as its `HTTPS_PROXY`. `https_proxy_connect_handler.ts` answers each `CONNECT`:
 
-- For `api.anthropic.com:443`, it decrypts the connection with the mkcert certificate in `~/.claude-proxy/api.anthropic.com.pem`. It gives the decrypted connection to `interceptedAnthropicApiServer`, which sends every path to `proxy_request_handler.ts`. If the certificate is missing, it answers 502.
+- For `api.anthropic.com:443`, it decrypts the connection with the certificate in `~/.claude-proxy/api.anthropic.com.pem`. `scripts/create_certificate_authority.sh` makes it, signed by a name-constrained certificate authority in `certificate_authority.pem`. `GET /_proxy/certificate_authority.pem` serves that authority's public certificate, after the `isAcceptedRequest` and Gateway Auth checks. It gives the decrypted connection to `interceptedAnthropicApiServer`, which sends every path to `proxy_request_handler.ts`. If the certificate is missing, it answers 502.
 - For any other host, it opens a TCP tunnel and does not record it.
 
 A client that cannot send CONNECT can use the tunnel endpoint. It sends `GET /_proxy/tunnel` with `Connection: Upgrade` and `Upgrade: claude-proxy-tunnel`. The `upgrade` handler in `claude_proxy_server.ts` checks the Host with `isAcceptedRequest` (403), Gateway Auth for the public Host (401), the path (404) and the upgrade token (400), in that order. It then answers 101 and decrypts the connection like a CONNECT tunnel, through `decryptAnthropicApiConnection`. It works with or without `publicHostname`.

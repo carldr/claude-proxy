@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import type { IncomingMessage, Server } from 'node:http';
 import net from 'node:net';
+import path from 'node:path';
 import type { Duplex } from 'node:stream';
 import tls from 'node:tls';
 
@@ -20,7 +21,7 @@ const connectAcceptedResponseHead = 'HTTP/1.1 200 Connection Established\r\n\r\n
 const tunnelAcceptedResponseHead = `HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: ${claudeProxyTunnelUpgradeToken}\r\n\r\n`;
 
 export interface HttpsProxyConnectHandlerOptions {
-  /** A certificate for api.anthropic.com, from `mkcert`. Claude Code trusts it through `NODE_EXTRA_CA_CERTS`. */
+  /** A certificate for api.anthropic.com, from `scripts/create_certificate_authority.sh`. Claude Code trusts its certificate authority through `NODE_EXTRA_CA_CERTS`. */
   anthropicApiCertificatePath: string;
   anthropicApiCertificateKeyPath: string;
   /** Receives the decrypted api.anthropic.com connections. It does not listen on a port. */
@@ -76,7 +77,7 @@ export function decryptAnthropicApiConnection(
   } catch (error) {
     const errorMessage =
       `claude-proxy has no certificate for api.anthropic.com (${(error as Error).message}). ` +
-      `Run: mkcert -cert-file ${options.anthropicApiCertificatePath} -key-file ${options.anthropicApiCertificateKeyPath} api.anthropic.com`;
+      `Run: sh scripts/create_certificate_authority.sh ${path.dirname(options.anthropicApiCertificatePath)}`;
     console.error(errorMessage);
     clientSocket.end(`HTTP/1.1 502 Bad Gateway\r\ncontent-type: text/plain\r\nconnection: close\r\n\r\n${errorMessage}\n`);
     return;

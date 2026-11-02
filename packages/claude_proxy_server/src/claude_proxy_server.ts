@@ -24,8 +24,9 @@ import { YamlConfigFile } from './yaml_config_file.ts';
 
 export interface ClaudeProxyServerOptions {
   /**
-   * Holds `subscription_accounts.yml`, `pricing.yml`, `requests.sqlite`, and the api.anthropic.com certificate
-   * `api.anthropic.com.pem` with its key `api.anthropic.com-key.pem`. Normally `~/.claude-proxy`.
+   * Holds `subscription_accounts.yml`, `pricing.yml`, `requests.sqlite`, the api.anthropic.com certificate
+   * `api.anthropic.com.pem` with its key `api.anthropic.com-key.pem`, and the certificate authority `certificate_authority.pem`
+   * that `scripts/create_certificate_authority.sh` makes. Normally `~/.claude-proxy`.
    */
   claudeProxyDirectory: string;
   anthropicBaseUrl: string;
@@ -60,6 +61,9 @@ const defaultConfigDirectory = path.join(import.meta.dirname, '..', 'default_con
  * tab left on port 4100, get a local 404 and are not recorded. Intercepted api.anthropic.com connections
  * forward every path, because Claude Code also uses others there, such as `/mcp-registry/`.
  */
+/** The path that serves `certificate_authority.pem`, which is public data. */
+const certificateAuthorityPath = '/_proxy/certificate_authority.pem';
+
 const anthropicApiPathPrefixes = ['/v1/', '/api/'];
 
 /**
@@ -239,6 +243,20 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
       anthropicBaseUrl: options.anthropicBaseUrl,
     });
 
+  /** Sends the public certificate of the proxy's certificate authority, so a machine's relay can trust it. */
+  const serveCertificateAuthority = (clientResponse: ServerResponse) => {
+    let certificateAuthorityPem: Buffer;
+    try {
+      certificateAuthorityPem = fs.readFileSync(path.join(options.claudeProxyDirectory, 'certificate_authority.pem'));
+    } catch {
+      clientResponse.writeHead(404, { 'content-type': 'text/plain' });
+      clientResponse.end('claude-proxy has no certificate authority. Run: sh scripts/create_certificate_authority.sh <claudeProxyDirectory>');
+      return;
+    }
+    clientResponse.writeHead(200, { 'content-type': 'application/x-pem-file' });
+    clientResponse.end(certificateAuthorityPem);
+  };
+
   const dispatchRequest = async (clientRequest: IncomingMessage, clientResponse: ServerResponse): Promise<void> => {
     const requestPath = clientRequest.url ?? '/';
     if (!isAcceptedRequest(clientRequest, httpServer, options.publicHostname)) {
@@ -252,7 +270,9 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
       clientResponse.end(`claude-proxy needs a Gateway Auth login or X-Gateway-Auth-Token for requests addressed to ${options.publicHostname}.`);
       return;
     }
-    if (requestPath.startsWith(webApiPathPrefix)) {
+    if (clientRequest.method === 'GET' && requestPath === certificateAuthorityPath) {
+      serveCertificateAuthority(clientResponse);
+    } else if (requestPath.startsWith(webApiPathPrefix)) {
       await handleWebApiRequest(clientRequest, clientResponse, {
         requestDatabase,
         readConfigErrors,

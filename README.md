@@ -6,7 +6,7 @@ claude-proxy is a local proxy between Claude Code and the Anthropic API. It reco
 
 ## How it works
 
-1. Claude Code sends its traffic to `http://127.0.0.1:4100`, because `HTTPS_PROXY` points there. The proxy decrypts the connections to `api.anthropic.com` with a certificate from mkcert. It passes connections to other hosts through unchanged. Claude Code still sees `api.anthropic.com` as its API host, so Remote Control and its other first-party features stay on. With `ANTHROPIC_BASE_URL` set to the proxy, Claude Code turns off Remote Control.
+1. Claude Code sends its traffic to `http://127.0.0.1:4100`, because `HTTPS_PROXY` points there. The proxy decrypts the connections to `api.anthropic.com` with a certificate that its own certificate authority signs. It passes connections to other hosts through unchanged. Claude Code still sees `api.anthropic.com` as its API host, so Remote Control and its other first-party features stay on. With `ANTHROPIC_BASE_URL` set to the proxy, Claude Code turns off Remote Control.
 2. For a `/v1/messages` request, the proxy finds the project directory of the request. It picks the first entry of `project_routes` in `subscription_accounts.yml` whose pattern matches. Without a match, it picks `default_subscription_account`.
 3. The proxy replaces Claude Code's OAuth token with its own access token for that subscription account. It changes nothing else in the request. The proxy gets its tokens from its own login to each account, described in [Log in to the subscription accounts](#log-in-to-the-subscription-accounts). It never reads, copies or refreshes Claude Code's own login.
 4. The proxy moves the request to the next subscription account when an account rejects the request with a 429 for its 5-hour window or a weekly window. An account can also have its own `failover_utilization`. The proxy avoids an account at or above that fraction of its 5-hour or weekly window, before the account rejects anything. The example sets 0.98 on Work, so programs that use Work without the proxy, such as cron jobs on other servers, keep the last 2%. At that threshold, the project's own account stays in the plan as the last resort, after every other account.
@@ -22,7 +22,7 @@ The proxy swaps the token on `/v1/messages*` only. Requests that carry their own
 - Node.js 23.6 or later, for TypeScript type stripping and `node:sqlite`
 - pnpm
 - Xcode command line tools, for `swiftc`
-- mkcert, with its local CA installed by `mkcert -install`
+- OpenSSL, for `scripts/create_certificate_authority.sh`
 
 ## Install
 
@@ -46,10 +46,16 @@ The proxy swaps the token on `/v1/messages*` only. Requests that carry their own
 
 4. Edit `~/.claude-proxy/subscription_accounts.yml`. The first start of the proxy creates this file. See [Configuration](#configuration).
 
-5. Create the certificate for `api.anthropic.com`:
+5. Create the certificate authority and the certificate for `api.anthropic.com`. The script refuses to replace an existing certificate authority:
 
    ```sh
-   mkcert -cert-file ~/.claude-proxy/api.anthropic.com.pem -key-file ~/.claude-proxy/api.anthropic.com-key.pem api.anthropic.com
+   sh scripts/create_certificate_authority.sh ~/.claude-proxy
+   ```
+
+   Make the macOS keychain trust the certificate authority, so that Claude Code trusts it:
+
+   ```sh
+   sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ~/.claude-proxy/certificate_authority.pem
    ```
 
 6. Point Claude Code at the proxy with one of the methods in [Connecting Claude Code](#connecting-claude-code).
@@ -77,7 +83,7 @@ Claude Code passes its environment to the commands that it runs. With `HTTPS_PRO
 
 The zsh function is the recommended method. It changes nothing outside Claude Code, and it checks the proxy at each launch.
 
-`NODE_EXTRA_CA_CERTS` lets Node.js programs that Claude Code runs trust the mkcert certificate. Claude Code itself trusts the mkcert CA through the macOS keychain, after `mkcert -install`.
+`NODE_EXTRA_CA_CERTS` lets Node.js programs that Claude Code runs trust the certificate authority. Claude Code itself trusts it through the macOS keychain, after the `security add-trusted-cert` command in [Install](#install). A running proxy also serves the certificate authority at `/_proxy/certificate_authority.pem`.
 
 ### zsh function
 
@@ -95,7 +101,7 @@ function claude() {
 	if [[ -z "$HTTPS_PROXY$ANTHROPIC_BASE_URL" ]] &&
 		curl --silent --fail --max-time 1 --output /dev/null "$claude_proxy_url/_proxy/api/subscription-account-status"
 	then
-		HTTPS_PROXY="$claude_proxy_url" NO_PROXY="localhost,127.0.0.1" NODE_EXTRA_CA_CERTS="$(mkcert -CAROOT)/rootCA.pem" \
+		HTTPS_PROXY="$claude_proxy_url" NO_PROXY="localhost,127.0.0.1" NODE_EXTRA_CA_CERTS="$HOME/.claude-proxy/certificate_authority.pem" \
 			command claude "$@"
 	else
 		command claude "$@"
@@ -105,14 +111,14 @@ function claude() {
 
 ### `env` in `~/.claude/settings.json`
 
-Add these keys to the `env` object. Replace the CA path with the output of `mkcert -CAROOT`, followed by `/rootCA.pem`:
+Add these keys to the `env` object. Replace `/Users/you` with your home directory:
 
 ```json
 {
   "env": {
     "HTTPS_PROXY": "http://127.0.0.1:4100",
     "NO_PROXY": "localhost,127.0.0.1",
-    "NODE_EXTRA_CA_CERTS": "/Users/you/Library/Application Support/mkcert/rootCA.pem"
+    "NODE_EXTRA_CA_CERTS": "/Users/you/.claude-proxy/certificate_authority.pem"
   }
 }
 ```
@@ -122,7 +128,7 @@ Add these keys to the `env` object. Replace the CA path with the output of `mkce
 ```sh
 export HTTPS_PROXY=http://127.0.0.1:4100
 export NO_PROXY=localhost,127.0.0.1
-export NODE_EXTRA_CA_CERTS="$(mkcert -CAROOT)/rootCA.pem"
+export NODE_EXTRA_CA_CERTS="$HOME/.claude-proxy/certificate_authority.pem"
 ```
 
 ### `ANTHROPIC_BASE_URL`
@@ -139,7 +145,8 @@ All configuration is in `~/.claude-proxy/`. The proxy reads each file again when
 | --- | --- |
 | `subscription_accounts.yml` | The subscription accounts with their failover utilization, and the project routes. It holds no credentials. |
 | `pricing.yml` | Prices per million tokens for each model. The proxy uses them to estimate costs. |
-| `api.anthropic.com.pem`, `api.anthropic.com-key.pem` | The mkcert certificate and key that the proxy uses to decrypt `api.anthropic.com` traffic. |
+| `certificate_authority.pem`, `certificate_authority-key.pem` | The certificate authority that `scripts/create_certificate_authority.sh` makes, and its key. |
+| `api.anthropic.com.pem`, `api.anthropic.com-key.pem` | The certificate and key that the proxy uses to decrypt `api.anthropic.com` traffic. The certificate authority signs the certificate. |
 | `requests.sqlite` | The recorded requests, the grants of the subscription accounts, their last known usage and their blocks. |
 | `local.claude-proxy.server.log` | The proxy log. |
 
@@ -226,4 +233,4 @@ The proxy listens on 127.0.0.1 by default. `CLAUDE_PROXY_LISTEN_ADDRESS` changes
 
 Other hosts and containers can reach the port of a central proxy without Caddy, so the proxy asks Gateway Auth itself. With `CLAUDE_PROXY_PUBLIC_HOSTNAME`, set `CLAUDE_PROXY_GATEWAY_AUTH_VERIFY_URL` to Gateway Auth's `/verify` URL with its `team_id`. Without it, the proxy does not start. For each request addressed to the public hostname, the proxy sends that URL only the request's `X-Gateway-Auth-Token` and `Cookie` headers. A 200 serves the request. Any other answer, or no answer within 5 seconds, gives 401. The proxy keeps each pass for 60 seconds, for one token or one `gate_session` cookie. A request addressed to `127.0.0.1` or `localhost` needs no Gateway Auth, so with a public hostname the proxy accepts it only from a loopback address, and gives 403 otherwise.
 
-`api.anthropic.com-key.pem` lets any program that reads it impersonate `api.anthropic.com` to every program that trusts the mkcert CA. mkcert makes the file readable by your user only. The proxy decrypts only `api.anthropic.com`. It cannot read the traffic that it tunnels to other hosts.
+`certificate_authority.pem` has a name constraint: it can sign only `api.anthropic.com`. A program that reads `certificate_authority-key.pem` still cannot impersonate any other host. `api.anthropic.com-key.pem` lets any program that reads it impersonate `api.anthropic.com` to every program that trusts the certificate authority. The script makes both key files readable by your user only. The proxy decrypts only `api.anthropic.com`. It cannot read the traffic that it tunnels to other hosts.
