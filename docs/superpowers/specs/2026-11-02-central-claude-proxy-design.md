@@ -107,7 +107,7 @@ The user runs:
 
 ```sh
 moss proxy add --domain claude-proxy.example.com --vm-name docker-host --target-port <port>
-moss proxy set-gateway-auth-team-id --domain claude-proxy.example.com --gateway-auth-team-id <id of gateway-auth-claude-proxy>
+moss proxy set-gateway-auth-team-id --domain claude-proxy.example.com --team-id <id of gateway-auth-claude-proxy>
 ```
 
 `moss proxy add` opens the firewall rule for the target port from the cluster's hosts. Caddy copies the bytes of an upgraded connection without the `streaming` setting, so the proxy row keeps the defaults.

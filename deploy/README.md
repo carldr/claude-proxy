@@ -52,7 +52,7 @@ Run these commands once. They send `claude-proxy.example.com` to port 4100 on do
 
 ```sh
 moss proxy add --domain claude-proxy.example.com --vm-name docker-host --target-port 4100 --proxy-mode none --create-dns-cname-record
-moss proxy set-gateway-auth-team-id --domain claude-proxy.example.com --gateway-auth-team-id <team ID>
+moss proxy set-gateway-auth-team-id --domain claude-proxy.example.com --team-id <team ID>
 ```
 
 `--proxy-mode none` is required. Cloudflare does not carry `Upgrade: claude-proxy-tunnel`, so with Cloudflare every tunnel would fall back to a direct connection with no error.
