@@ -55,7 +55,7 @@ export function SessionsView({ onShowSessionRequests }: { onShowSessionRequests:
                 </td>
                 <td className="numeric">{session.request_count}</td>
                 <td className="numeric">{formatCostUsd(session.estimated_cost_usd)}</td>
-                <td title={session.session_log_file_path ?? 'No log file in ~/.claude/projects'}>
+                <td>
                   <code className="resume-command">claude --resume {session.session_id.slice(0, 8)}</code>{' '}
                   <button
                     className="text-button"

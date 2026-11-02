@@ -1,6 +1,3 @@
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ProxiedRequestFilters, RequestDatabase } from './request_database.ts';
 import type { SubscriptionAccountLoginHandler } from './subscription_account_login_handler.ts';
@@ -18,7 +15,6 @@ export interface WebApiHandlerDependencies {
   subscriptionAccountUsageMonitor: SubscriptionAccountUsageMonitor;
   subscriptionAccountLoginHandler: SubscriptionAccountLoginHandler;
   readSubscriptionAccountsConfig: () => SubscriptionAccountsConfig;
-  claudeCodeProjectsDirectory: string;
 }
 
 export interface SubscriptionAccountStatus {
@@ -138,12 +134,7 @@ export async function handleWebApiRequest(
 
     if (clientRequest.method === 'GET' && apiPath === 'sessions') {
       const sessions = requestDatabase.listSessions(readQueryParameter('projectPath'), Math.min(Number(readQueryParameter('limit') ?? 200), 1000));
-      const sessionLogFilePaths = findClaudeCodeSessionLogFiles(dependencies.claudeCodeProjectsDirectory);
-      return sendJson(
-        clientResponse,
-        200,
-        sessions.map((session) => ({ ...session, session_log_file_path: sessionLogFilePaths.get(String(session.session_id)) ?? null })),
-      );
+      return sendJson(clientResponse, 200, sessions);
     }
 
     // Shell functions that start Claude Code probe `routing-status`, the name that this endpoint had before.
@@ -189,32 +180,6 @@ async function readJsonRequestBody(clientRequest: IncomingMessage): Promise<unkn
     throw new Error('The request body is not valid JSON.');
   }
 }
-
-/** Maps each session ID to its log file, `~/.claude/projects/<encoded project path>/<session ID>.jsonl`. */
-function findClaudeCodeSessionLogFiles(claudeCodeProjectsDirectory: string): Map<string, string> {
-  const sessionLogFilePaths = new Map<string, string>();
-  let projectDirectoryNames: string[];
-  try {
-    projectDirectoryNames = fs.readdirSync(claudeCodeProjectsDirectory);
-  } catch {
-    return sessionLogFilePaths;
-  }
-  for (const projectDirectoryName of projectDirectoryNames) {
-    const projectDirectory = path.join(claudeCodeProjectsDirectory, projectDirectoryName);
-    let fileNames: string[];
-    try {
-      fileNames = fs.readdirSync(projectDirectory);
-    } catch {
-      continue;
-    }
-    for (const fileName of fileNames) {
-      if (fileName.endsWith('.jsonl')) sessionLogFilePaths.set(fileName.slice(0, -'.jsonl'.length), path.join(projectDirectory, fileName));
-    }
-  }
-  return sessionLogFilePaths;
-}
-
-export const defaultClaudeCodeProjectsDirectory = path.join(os.homedir(), '.claude', 'projects');
 
 function sendJson(clientResponse: ServerResponse, statusCode: number, responseValue: unknown): void {
   clientResponse.writeHead(statusCode, { 'content-type': 'application/json', 'cache-control': 'no-store' });

@@ -124,7 +124,6 @@ export interface ClaudeCodeSession {
   request_count: number;
   estimated_cost_usd: number | null;
   first_user_text: string | null;
-  session_log_file_path: string | null;
 }
 
 export interface DailyRouteCost {

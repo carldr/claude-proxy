@@ -2,7 +2,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { createClaudeProxyServer } from './claude_proxy_server.ts';
 import { anthropicOAuthEndpoints } from './subscription_account_oauth.ts';
-import { defaultClaudeCodeProjectsDirectory } from './web_api_handler.ts';
 
 const claudeProxyPort = Number(process.env.CLAUDE_PROXY_PORT ?? 4100);
 
@@ -13,7 +12,6 @@ const claudeProxyServer = createClaudeProxyServer({
   anthropicBaseUrl: 'https://api.anthropic.com',
   oauthEndpoints: anthropicOAuthEndpoints,
   webUiDistDirectory: path.resolve(import.meta.dirname, '..', '..', 'claude_proxy_web_ui', 'dist'),
-  claudeCodeProjectsDirectory: defaultClaudeCodeProjectsDirectory,
   publicHostname: process.env.CLAUDE_PROXY_PUBLIC_HOSTNAME || null,
 });
 claudeProxyServer.httpServer.listen(claudeProxyPort, claudeProxyListenAddress, () => {

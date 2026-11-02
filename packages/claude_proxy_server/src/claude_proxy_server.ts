@@ -31,7 +31,6 @@ export interface ClaudeProxyServerOptions {
   /** The OAuth endpoints that refresh the subscription account grants, normally `anthropicOAuthEndpoints`. */
   oauthEndpoints: OAuthEndpoints;
   webUiDistDirectory: string;
-  claudeCodeProjectsDirectory: string;
   /**
    * The public host name of a central install, such as `claude-proxy.example.com`, or null for a local install.
    * Caddy terminates TLS for this name. When it is set, the proxy refuses every CONNECT.
@@ -215,7 +214,6 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
         subscriptionAccountUsageMonitor,
         subscriptionAccountLoginHandler,
         readSubscriptionAccountsConfig,
-        claudeCodeProjectsDirectory: options.claudeCodeProjectsDirectory,
       });
     } else if (requestPath.startsWith(webUiPathPrefix)) {
       handleWebUiStaticFileRequest(clientRequest, clientResponse, options.webUiDistDirectory);

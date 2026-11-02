@@ -262,7 +262,6 @@ describe('claude-proxy', () => {
       anthropicBaseUrl: anthropicUpstream.baseUrl,
       oauthEndpoints: { authorizeUrl: `${tokenServer.baseUrl}/authorize`, tokenUrl: `${tokenServer.baseUrl}/token` },
       webUiDistDirectory: path.join(claudeProxyDirectory, 'no_web_ui'),
-      claudeCodeProjectsDirectory: path.join(claudeProxyDirectory, 'no_projects'),
       publicHostname,
     });
     await new Promise<void>((resolve) => claudeProxyServer.httpServer.listen(0, '127.0.0.1', resolve));
@@ -405,6 +404,17 @@ describe('claude-proxy', () => {
     const requestFilterOptions = await readApi('request-filter-options');
     assert.deepEqual(requestFilterOptions.projectPaths, ['/Users/example_user/Development/example_project']);
     assert.deepEqual(requestFilterOptions.models, [{ model: 'claude-opus-5-5', has_recent_traffic: 1 }]);
+  });
+
+  test('lists a session with its request count and no session log file path', async () => {
+    await startProxy((_, upstreamResponse) => sendStreamingMessage(upstreamResponse, 'Hello zebra world'));
+    await (await sendClaudeCodeRequest()).text();
+
+    const sessions = await readApi('sessions');
+    assert.equal(sessions.length, 1);
+    assert.equal(sessions[0].session_id, sessionId);
+    assert.equal(sessions[0].request_count, 1);
+    assert.equal('session_log_file_path' in sessions[0], false);
   });
 
   test('sums the cost of the filtered requests in total, over 30 days and over 24 hours', async () => {
