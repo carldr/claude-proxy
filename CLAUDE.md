@@ -26,9 +26,11 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:4199 claude -p "Reply with the single word: 
 
 - Node runs the TypeScript source directly with type stripping, so the server has no build step. `tsconfig.json` sets `erasableSyntaxOnly`. Do not use parameter properties, enums or namespaces. Import with `.ts` extensions, and use `import type` for types.
 - The database is `node:sqlite`. Bodies are compressed with `node:zlib` zstd. Do not add `better-sqlite3`.
-- `RequestDatabase` creates its schema with `CREATE ... IF NOT EXISTS`. `~/.claude-proxy/requests.sqlite` holds real data, so a schema change needs an explicit migration in the constructor, such as `addRequestBodyLayoutColumn`.
+- `RequestDatabase` creates its schema with `CREATE ... IF NOT EXISTS`. `~/.claude-proxy/requests.sqlite` holds real data, so a schema change needs an explicit migration in the constructor, such as `addMissingColumn` or `compressPlainHeaders`.
 - A JSON request body is stored as parts. Each top-level field of 256 characters of JSON or more, and each entry of `messages`, is one row of `request_body_parts`, found by its SHA-256. `request_body_layout_zstd` lists the fields and their parts. A body that compact `JSON.stringify` does not rebuild byte for byte stays whole in `request_body_zstd`. At most one of the two columns is set.
-- `splitWholeRequestBodiesIntoParts` splits the whole bodies of an earlier database once, at start, in transactions of 500 rows, then runs VACUUM. The setting `request_body_parts_split` records that it finished.
+- The request and response headers are compressed, in `request_headers_json_zstd` and `response_headers_json_zstd`.
+- At start, the constructor migrates an earlier database: `splitWholeRequestBodiesIntoParts`, `compressPlainHeaders` and `moveSearchTextToContentlessIndex`. Each works in transactions of 500 rows. After any of them changes the database, the constructor runs VACUUM once.
+- At start and then once a day, `expireRequestContentsStartedBefore` deletes the headers, bodies, preview and search text of each request older than 365 days, and sets `contents_expired_at`. The tokens, cost, session and project stay. It then deletes each part whose `part_last_used_on` is before that day. `storeRequestBodyPart` moves `part_last_used_on` forward each time a request uses the part, so no kept request loses a part.
 
 ## Request flow
 
@@ -75,13 +77,15 @@ Do not change the setup back to `ANTHROPIC_BASE_URL`. Claude Code turns off Remo
 
 ## Full-text search
 
-Each request repeats the whole conversation, so `proxied_request_search` (FTS5, rowid = `proxied_requests.id`) indexes only what is new in each request:
+Each request repeats the whole conversation, so `proxied_request_search_index` (FTS5, rowid = `proxied_requests.id`) indexes only what is new in each request:
 
 - `user_text`: the last user message, without `<system-reminder>` blocks;
 - `tool_text`: the tool results in that message, plus the tool calls and thinking of the response;
 - `response_text`: the text of the response.
 
 Do not index the full request body.
+
+The index is contentless (`content = ''`, `contentless_delete = 1`): it keeps no copy of the text, and a query reads only the rowid. The request list and the session list show `proxied_requests.user_text_preview`, the first 300 characters of `user_text`. `insertStartedRequest` writes the row with the request's text and keeps that text in memory. `completeRequest` deletes the row and writes it again with the request's text and the response's text.
 
 ## Web UI and menu bar
 

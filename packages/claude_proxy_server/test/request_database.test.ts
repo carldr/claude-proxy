@@ -5,7 +5,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { zstdCompressSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, test } from 'node:test';
-import { RequestDatabase, type StartedProxiedRequest } from '../src/request_database.ts';
+import { RequestDatabase, type CompletedProxiedRequest, type StartedProxiedRequest } from '../src/request_database.ts';
 
 const largeSafeguards = { rules: 'x'.repeat(5000) };
 const largeTools = [{ name: 'Read', description: 'y'.repeat(5000) }];
@@ -25,9 +25,31 @@ function messagesRequestBody(messageCount: number): Record<string, unknown> {
   };
 }
 
-function startedRequest(requestBody: Buffer): StartedProxiedRequest {
+function completedRequest(responseText: string): CompletedProxiedRequest {
   return {
-    startedAt: new Date().toISOString(),
+    completedAt: new Date().toISOString(),
+    durationMs: 10,
+    routeKind: 'subscription_account',
+    routeName: 'Work',
+    statusCode: 200,
+    errorType: null,
+    stopReason: 'end_turn',
+    inputTokens: 1,
+    outputTokens: 1,
+    cacheCreation5mInputTokens: 0,
+    cacheCreation1hInputTokens: 0,
+    cacheReadInputTokens: 0,
+    estimatedCostUsd: 0.5,
+    responseHeadersJson: '{"request-id":"req_1"}',
+    responseBody: `{"content":"${responseText}"}`,
+    responseText,
+    responseToolText: '',
+  };
+}
+
+function startedRequest(requestBody: Buffer, startedAt = new Date().toISOString(), lastUserMessageText = ''): StartedProxiedRequest {
+  return {
+    startedAt,
     httpMethod: 'POST',
     requestPath: '/v1/messages?beta=true',
     clientAuthKind: 'oauth',
@@ -36,9 +58,9 @@ function startedRequest(requestBody: Buffer): StartedProxiedRequest {
     sessionId: 'session-1',
     projectPath: '/Users/test/project',
     previousUpstreamRequestId: null,
-    requestHeadersJson: '{}',
+    requestHeadersJson: '{"user-agent":"claude-cli"}',
     requestBody,
-    lastUserMessageText: '',
+    lastUserMessageText,
     lastUserMessageToolResultText: '',
   };
 }
@@ -108,6 +130,88 @@ describe('request bodies in the request database', () => {
 
     assert.equal(requestDatabase.readProxiedRequest(proxiedRequestId)?.request_body, null);
     requestDatabase.close();
+  });
+
+  test('finds a request by its user text and its response text, and shows the preview, after the response', () => {
+    const requestDatabase = new RequestDatabase(databasePath);
+    const proxiedRequestId = requestDatabase.insertStartedRequest(
+      startedRequest(Buffer.from(JSON.stringify(messagesRequestBody(1))), undefined, 'Find the zebra bug'),
+    );
+    requestDatabase.completeRequest(proxiedRequestId, completedRequest('The giraffe fixed it'));
+
+    for (const searchText of ['zebra', 'giraffe']) {
+      assert.deepEqual(
+        requestDatabase.listProxiedRequests({ searchText }, { limit: 10 }).map((proxiedRequest) => proxiedRequest.id),
+        [proxiedRequestId],
+        `search for ${searchText}`,
+      );
+    }
+    assert.equal(requestDatabase.listProxiedRequests({}, { limit: 10 })[0].user_text_preview, 'Find the zebra bug');
+    assert.equal(requestDatabase.readProxiedRequest(proxiedRequestId)?.request_headers_json, '{"user-agent":"claude-cli"}');
+    assert.equal(requestDatabase.readProxiedRequest(proxiedRequestId)?.response_headers_json, '{"request-id":"req_1"}');
+    requestDatabase.close();
+  });
+
+  test('expires the contents of old requests, keeps their costs, and keeps the parts that a later request uses', () => {
+    const requestDatabase = new RequestDatabase(databasePath);
+    const oldProxiedRequestId = requestDatabase.insertStartedRequest(
+      startedRequest(Buffer.from(JSON.stringify(messagesRequestBody(2))), '2025-01-01T10:00:00.000Z', 'The old zebra prompt'),
+    );
+    requestDatabase.completeRequest(oldProxiedRequestId, completedRequest('An old reply'));
+    const partCountOfOldRequest = countRows('request_body_parts');
+    // The later request drops the first message, keeps the second, and adds a third.
+    const laterMessages = (messagesRequestBody(3).messages as unknown[]).slice(1);
+    const laterRequestBodyText = JSON.stringify({ ...messagesRequestBody(3), messages: laterMessages });
+    const laterProxiedRequestId = requestDatabase.insertStartedRequest(
+      startedRequest(Buffer.from(laterRequestBodyText), '2026-06-01T10:00:00.000Z'),
+    );
+
+    assert.equal(requestDatabase.expireRequestContentsStartedBefore('2026-01-01T00:00:00.000Z'), 1);
+
+    const oldRequest = requestDatabase.readProxiedRequest(oldProxiedRequestId);
+    assert.equal(oldRequest?.request_body, null);
+    assert.equal(oldRequest?.response_body, null);
+    assert.equal(oldRequest?.request_headers_json, null);
+    assert.equal(oldRequest?.user_text_preview, null);
+    assert.ok(oldRequest?.contents_expired_at);
+    assert.equal(oldRequest?.estimated_cost_usd, 0.5);
+    assert.equal(requestDatabase.listProxiedRequests({ searchText: 'zebra' }, { limit: 10 }).length, 0);
+    assert.equal(requestDatabase.readProxiedRequest(laterProxiedRequestId)?.request_body, laterRequestBodyText);
+    // The later request added its third message, and the expiry deleted the first, which only the old request used.
+    assert.equal(countRows('request_body_parts'), partCountOfOldRequest);
+    assert.equal(requestDatabase.expireRequestContentsStartedBefore('2026-01-01T00:00:00.000Z'), 0);
+    requestDatabase.close();
+  });
+
+  test('migrates the plain headers and the search table of an earlier database', () => {
+    const earlierDatabase = new DatabaseSync(databasePath);
+    earlierDatabase.exec(`
+      CREATE TABLE proxied_requests (
+        id INTEGER PRIMARY KEY, started_at TEXT NOT NULL, completed_at TEXT, duration_ms INTEGER, http_method TEXT NOT NULL,
+        request_path TEXT NOT NULL, client_auth_kind TEXT NOT NULL, route_kind TEXT, route_name TEXT, model TEXT,
+        is_streaming INTEGER NOT NULL, session_id TEXT, project_path TEXT, is_project_path_inherited INTEGER NOT NULL DEFAULT 0,
+        status_code INTEGER, error_type TEXT, stop_reason TEXT, input_tokens INTEGER, output_tokens INTEGER,
+        cache_creation_5m_input_tokens INTEGER, cache_creation_1h_input_tokens INTEGER, cache_read_input_tokens INTEGER,
+        estimated_cost_usd REAL, request_headers_json TEXT NOT NULL, request_body_zstd BLOB, response_headers_json TEXT,
+        response_body_zstd BLOB, upstream_request_id TEXT
+      );
+      CREATE VIRTUAL TABLE proxied_request_search USING fts5 (user_text, tool_text, response_text);
+      INSERT INTO proxied_requests (id, started_at, http_method, request_path, client_auth_kind, is_streaming, session_id,
+        request_headers_json, response_headers_json)
+        VALUES (1, '2026-10-20T10:00:00.000Z', 'POST', '/v1/messages', 'oauth', 1, 'session-1', '{"a":"1"}', '{"b":"2"}');
+      INSERT INTO proxied_request_search (rowid, user_text, tool_text, response_text) VALUES (1, 'An earlier zebra prompt', '', 'A reply');
+    `);
+    earlierDatabase.close();
+
+    const requestDatabase = new RequestDatabase(databasePath);
+    const migratedRequest = requestDatabase.readProxiedRequest(1);
+    assert.equal(migratedRequest?.request_headers_json, '{"a":"1"}');
+    assert.equal(migratedRequest?.response_headers_json, '{"b":"2"}');
+    assert.equal(migratedRequest?.user_text_preview, 'An earlier zebra prompt');
+    assert.equal(requestDatabase.listProxiedRequests({ searchText: 'zebra' }, { limit: 10 }).length, 1);
+    assert.equal(requestDatabase.listSessions(undefined, 10)[0].first_user_text, 'An earlier zebra prompt');
+    requestDatabase.close();
+    assert.equal(countRows('sqlite_schema', "WHERE name = 'proxied_request_search'"), 0);
   });
 
   test('splits the whole bodies of an earlier database into parts when it opens', () => {

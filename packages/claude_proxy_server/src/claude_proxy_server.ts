@@ -54,6 +54,12 @@ const defaultConfigDirectory = path.join(import.meta.dirname, '..', 'default_con
 const anthropicApiPathPrefixes = ['/v1/', '/api/'];
 
 /**
+ * After this many days, the proxy deletes the headers, bodies and search text of a request, at start and then once a day.
+ * The tokens, the cost, the session and the project of the request stay.
+ */
+const requestContentsRetentionDays = 365;
+
+/**
  * Accepts a request only when its Host is 127.0.0.1 or localhost on the proxy's port, and when it has no Origin
  * or the proxy's own Origin. This stops web pages, including pages that use DNS rebinding, from reading recorded
  * requests or from sending requests that the proxy would send with a subscription account's grant. Claude Code sends no Origin header.
@@ -138,6 +144,19 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
 
   const requestDatabase = new RequestDatabase(path.join(options.claudeProxyDirectory, 'requests.sqlite'));
   requestDatabase.markUnfinishedRequestsInterrupted();
+  const expireOldRequestContents = () => {
+    try {
+      const expiredRequestCount = requestDatabase.expireRequestContentsStartedBefore(
+        new Date(Date.now() - requestContentsRetentionDays * 24 * 60 * 60 * 1000).toISOString(),
+      );
+      if (expiredRequestCount > 0) console.log(`Deleted the contents of ${expiredRequestCount} requests older than ${requestContentsRetentionDays} days.`);
+    } catch (error) {
+      console.error(`claude-proxy could not delete the contents of old requests: ${(error as Error).message}`);
+    }
+  };
+  expireOldRequestContents();
+  const requestContentsExpiryTimer = setInterval(expireOldRequestContents, 24 * 60 * 60 * 1000);
+  requestContentsExpiryTimer.unref();
   const subscriptionAccountStore = new SubscriptionAccountStore(path.join(options.claudeProxyDirectory, 'requests.sqlite'));
   makeRequestDatabaseFilesPrivate();
   const readSubscriptionAccountsConfig = () => subscriptionAccountsConfigFile.read().config;
@@ -250,6 +269,7 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
     subscriptionAccountRouter,
     subscriptionAccountUsageMonitor,
     async close() {
+      clearInterval(requestContentsExpiryTimer);
       subscriptionAccountUsageMonitor.stop();
       httpServer.closeAllConnections();
       for (const connectClientSocket of connectClientSockets) connectClientSocket.destroy();

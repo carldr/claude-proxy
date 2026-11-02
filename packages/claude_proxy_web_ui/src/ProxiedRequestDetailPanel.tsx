@@ -142,7 +142,10 @@ export function ProxiedRequestDetailPanel({ proxiedRequestId, findRouteAppearanc
       {responseBody && Array.isArray(responseBody.content) ? (
         <ContentBlocks content={responseBody.content} />
       ) : (
-        <pre className="code-block">{proxiedRequest.response_body ?? 'No response yet'}</pre>
+        <pre className="code-block">
+          {proxiedRequest.response_body ??
+            (proxiedRequest.contents_expired_at ? 'The proxy deleted the contents of this request a year after it started' : 'No response yet')}
+        </pre>
       )}
 
       <h3>Request</h3>

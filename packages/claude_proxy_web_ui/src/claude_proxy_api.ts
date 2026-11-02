@@ -72,12 +72,12 @@ export interface UpstreamAttempt {
 }
 
 export interface ProxiedRequestDetail extends ProxiedRequestSummary {
-  request_headers_json: string;
+  /** Set when the proxy deleted the headers and bodies of the request, a year after it started. */
+  contents_expired_at: string | null;
+  request_headers_json: string | null;
   request_body: string | null;
   response_headers_json: string | null;
   response_body: string | null;
-  user_text: string;
-  response_text: string;
   upstream_attempts: UpstreamAttempt[];
 }
 
