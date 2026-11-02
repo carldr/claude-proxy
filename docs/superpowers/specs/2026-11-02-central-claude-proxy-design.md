@@ -52,6 +52,7 @@ Claude Code ──CONNECT──▶ relay (127.0.0.1:4100) ──HTTPS upgrade─
 - For `CONNECT` to any other host, the relay opens the TCP tunnel from the local machine. Other traffic never reaches the central service, so `NO_PROXY` needs no internal hosts.
 - `GET /_proxy/api/subscription-account-status` on the relay forwards to the central service with the token. The menu bar keeps its URL and needs no token. The zsh function keeps its check of that path.
 - Configuration is `~/.claude-proxy-relay/`: `central_url` and `gateway_auth_token`, both mode 600, and `certificate_authority.pem`.
+- The relay requires a credential, so another Unix user without sudo cannot use it. At its first start, the relay writes a random `proxy_credential`, mode 600. Every CONNECT needs `Proxy-Authorization: Basic` of `relay:<credential>`, which Claude Code sends from `HTTPS_PROXY=http://relay:<credential>@127.0.0.1:<port>`. The status request needs `Authorization: Basic` of the same pair. The menu bar and the zsh function read the file. On a host with several users, each user's relay has a port of its own (`CLAUDE_PROXY_RELAY_PORT`).
 - On a Mac, a launchd agent runs the relay in place of the server agent. On a Roy host, the user's dotfiles install it as a systemd user service.
 
 ### Central claude-proxy

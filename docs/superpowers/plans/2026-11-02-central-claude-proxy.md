@@ -259,6 +259,29 @@ Runs after Task 5 and before Task 6. Task 7's compose file and Task 12 use its s
 - [ ] **Step 5: Run** `pnpm test` and `pnpm typecheck`. Expected: all pass.
 - [ ] **Step 6: Update** README "Security" and `CLAUDE.md` "Request flow" (a public request needs Gateway Auth's 200, asked by claude-proxy), then commit.
 
+### Task 14: The relay's proxy credential
+
+Runs after Task 10 and before Task 9. Task 9's agents, the zsh function and Task 12 use the credential.
+
+**Files:**
+- Modify: `packages/claude_proxy_relay/src/claude_proxy_relay.ts`, `packages/claude_proxy_relay/src/main.ts`
+- Modify: `macos/claude_proxy_menu_bar/ClaudeProxyMenuBar.swift`
+- Modify: `README.md` (zsh function, `env` in `settings.json`, the relay section), `CLAUDE.md`
+- Test: `packages/claude_proxy_relay/test/claude_proxy_relay.test.ts`
+
+**Interfaces:**
+- Produces: file `<relayDirectory>/proxy_credential`, mode 600, 32 random bytes as base64url, written once with an exclusive create. User name `relay`. `ClaudeProxyRelayOptions.relayProxyCredential: string`. CONNECT needs `Proxy-Authorization: Basic base64("relay:<credential>")`; `GET /_proxy/api/subscription-account-status` needs `Authorization: Basic` of the same pair. A missing or wrong CONNECT credential gets `407 Proxy Authentication Required` with `Proxy-Authenticate: Basic realm="claude-proxy-relay"`; a missing or wrong status credential gets `401`. Comparison with `crypto.timingSafeEqual` on equal-length buffers.
+
+- [ ] **Step 1: Write the failing tests:**
+  - `refuses a CONNECT without the proxy credential`: no header, a wrong credential, and a wrong user name each get 407 with the `Proxy-Authenticate` header, and no tunnel opens.
+  - `accepts a CONNECT with the proxy credential`: the existing CONNECT tests send the header and pass.
+  - `refuses the status request without the credential`: 401; with `Authorization: Basic` it is forwarded as before.
+  - `writes the proxy credential once at first start, mode 600`: a second start keeps the same value; a credential file readable by group or others makes `main.ts` refuse to start, naming the file.
+- [ ] **Step 2: Run** `node --test packages/claude_proxy_relay/test/claude_proxy_relay.test.ts`. Expected: FAIL.
+- [ ] **Step 3: Implement** in the relay, then the menu bar: it reads `~/.claude-proxy-relay/proxy_credential` at each poll and sends `Authorization: Basic`. A missing file shows the same grey `!` as a relay that does not answer.
+- [ ] **Step 4: Run** `pnpm test`, `pnpm typecheck` and `pnpm build` (the menu bar build). Expected: all pass.
+- [ ] **Step 5: Update** README: the zsh function reads the credential file, builds `HTTPS_PROXY=http://relay:<credential>@127.0.0.1:4100`, and checks the relay with `curl -u relay:<credential>`; the `settings.json` method gives the same URL; a host with several users sets `CLAUDE_PROXY_RELAY_PORT` per user. Commit.
+
 ### Task 12: Deployment and cut-over
 
 Each step is a command with a check. Stop and report on any failed check.
