@@ -42,7 +42,7 @@ Claude Code reaches the proxy as its `HTTPS_PROXY`. `https_proxy_connect_handler
 
 Do not change the setup back to `ANTHROPIC_BASE_URL`. Claude Code turns off Remote Control when `ANTHROPIC_BASE_URL` is not `api.anthropic.com`. The loopback listener still accepts `ANTHROPIC_BASE_URL` requests, as follows.
 
-`claude_proxy_server.ts` checks every request on the loopback listener with `isLocalRequest`. The Host must be `127.0.0.1` or `localhost` on the proxy port, and the Origin must be absent or the proxy's own. It then sends the request to one of three handlers:
+`claude_proxy_server.ts` checks every request on the loopback listener with `isAcceptedRequest`. The Host must be `127.0.0.1` or `localhost` on the proxy port, and the Origin must be absent or the proxy's own. When `CLAUDE_PROXY_PUBLIC_HOSTNAME` sets `publicHostname`, the Host can also be that name without a port, with the Origin absent or `https://<publicHostname>`, and the `connect` handler answers every CONNECT with 405. `CLAUDE_PROXY_LISTEN_ADDRESS` sets the listen address (default `127.0.0.1`). It then sends the request to one of three handlers:
 
 - `/_proxy/api/*` goes to `web_api_handler.ts`.
 - `/_proxy/*` goes to `web_ui_static_file_handler.ts`.

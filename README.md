@@ -218,6 +218,6 @@ launchd/                        Scripts that install and remove the launchd agen
 
 ## Security
 
-The proxy listens on 127.0.0.1 only. It rejects requests whose Host is not `127.0.0.1` or `localhost`, and requests from web pages on other origins. The database stores request headers with the `Authorization` and `x-api-key` values replaced by `[redacted]`. It stores the access and refresh tokens of the subscription accounts, so keep `~/.claude-proxy/requests.sqlite` private.
+The proxy listens on 127.0.0.1 by default. `CLAUDE_PROXY_LISTEN_ADDRESS` changes the address. It rejects requests whose Host is not `127.0.0.1` or `localhost`, and requests from web pages on other origins. When `CLAUDE_PROXY_PUBLIC_HOSTNAME` is set, the proxy also accepts that Host without a port, with no Origin or the Origin `https://<public hostname>`, and it answers every CONNECT with 405. The database stores request headers with the `Authorization` and `x-api-key` values replaced by `[redacted]`. It stores the access and refresh tokens of the subscription accounts, so keep `~/.claude-proxy/requests.sqlite` private.
 
 `api.anthropic.com-key.pem` lets any program that reads it impersonate `api.anthropic.com` to every program that trusts the mkcert CA. mkcert makes the file readable by your user only. The proxy decrypts only `api.anthropic.com`. It cannot read the traffic that it tunnels to other hosts.

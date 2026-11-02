@@ -33,6 +33,11 @@ export interface ClaudeProxyServerOptions {
   oauthEndpoints: OAuthEndpoints;
   webUiDistDirectory: string;
   claudeCodeProjectsDirectory: string;
+  /**
+   * The public host name of a central install, such as `claude-proxy.example.com`, or null for a local install.
+   * Caddy terminates TLS for this name. When it is set, the proxy refuses every CONNECT.
+   */
+  publicHostname: string | null;
 }
 
 export interface ClaudeProxyServer {
@@ -61,15 +66,17 @@ const requestContentsRetentionDays = 365;
 
 /**
  * Accepts a request only when its Host is 127.0.0.1 or localhost on the proxy's port, and when it has no Origin
- * or the proxy's own Origin. This stops web pages, including pages that use DNS rebinding, from reading recorded
+ * or the proxy's own Origin. When `publicHostname` is set, it also accepts that Host without a port, with no Origin
+ * or the Origin `https://<publicHostname>`. This stops web pages, including pages that use DNS rebinding, from reading recorded
  * requests or from sending requests that the proxy would send with a subscription account's grant. Claude Code sends no Origin header.
  */
-function isLocalRequest(clientRequest: IncomingMessage, httpServer: Server): boolean {
+function isAcceptedRequest(clientRequest: IncomingMessage, httpServer: Server, publicHostname: string | null): boolean {
   const proxyPort = (httpServer.address() as AddressInfo).port;
   const localHosts = [`127.0.0.1:${proxyPort}`, `localhost:${proxyPort}`];
-  if (!localHosts.includes(clientRequest.headers.host ?? '')) return false;
   const origin = clientRequest.headers.origin;
-  return origin === undefined || localHosts.some((localHost) => origin === `http://${localHost}`);
+  const requestHost = clientRequest.headers.host ?? '';
+  if (localHosts.includes(requestHost)) return origin === undefined || localHosts.some((localHost) => origin === `http://${localHost}`);
+  return publicHostname !== null && requestHost === publicHostname && (origin === undefined || origin === `https://${publicHostname}`);
 }
 
 /** The file system calls of `makeClaudeProxyFilePrivate`. Tests replace them. */
@@ -196,9 +203,10 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
 
   const dispatchRequest = async (clientRequest: IncomingMessage, clientResponse: ServerResponse): Promise<void> => {
     const requestPath = clientRequest.url ?? '/';
-    if (!isLocalRequest(clientRequest, httpServer)) {
+    if (!isAcceptedRequest(clientRequest, httpServer, options.publicHostname)) {
+      const acceptedHostNames = options.publicHostname === null ? '127.0.0.1 or localhost' : `127.0.0.1, localhost or ${options.publicHostname}`;
       clientResponse.writeHead(403, { 'content-type': 'text/plain' });
-      clientResponse.end('claude-proxy accepts requests only from this computer, addressed to 127.0.0.1 or localhost.');
+      clientResponse.end(`claude-proxy accepts only requests addressed to ${acceptedHostNames}.`);
       return;
     }
     if (requestPath.startsWith(webApiPathPrefix)) {
@@ -251,6 +259,10 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
 
   const connectClientSockets = new Set<Duplex>();
   httpServer.on('connect', (connectRequest: IncomingMessage, clientSocket: Duplex, connectRequestHead: Buffer) => {
+    if (options.publicHostname !== null) {
+      clientSocket.end('HTTP/1.1 405 Method Not Allowed\r\nconnection: close\r\ncontent-length: 0\r\n\r\n');
+      return;
+    }
     handleHttpsProxyConnect(connectRequest, clientSocket, connectRequestHead, {
       anthropicApiCertificatePath: path.join(options.claudeProxyDirectory, 'api.anthropic.com.pem'),
       anthropicApiCertificateKeyPath: path.join(options.claudeProxyDirectory, 'api.anthropic.com-key.pem'),

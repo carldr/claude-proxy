@@ -6,15 +6,18 @@ import { defaultClaudeCodeProjectsDirectory } from './web_api_handler.ts';
 
 const claudeProxyPort = Number(process.env.CLAUDE_PROXY_PORT ?? 4100);
 
+const claudeProxyListenAddress = process.env.CLAUDE_PROXY_LISTEN_ADDRESS ?? '127.0.0.1';
+
 const claudeProxyServer = createClaudeProxyServer({
   claudeProxyDirectory: process.env.CLAUDE_PROXY_DIRECTORY ?? path.join(os.homedir(), '.claude-proxy'),
   anthropicBaseUrl: 'https://api.anthropic.com',
   oauthEndpoints: anthropicOAuthEndpoints,
   webUiDistDirectory: path.resolve(import.meta.dirname, '..', '..', 'claude_proxy_web_ui', 'dist'),
   claudeCodeProjectsDirectory: defaultClaudeCodeProjectsDirectory,
+  publicHostname: process.env.CLAUDE_PROXY_PUBLIC_HOSTNAME || null,
 });
-claudeProxyServer.httpServer.listen(claudeProxyPort, '127.0.0.1', () => {
-  console.log(`claude-proxy listens on http://127.0.0.1:${claudeProxyPort}, web UI at http://127.0.0.1:${claudeProxyPort}/_proxy/`);
+claudeProxyServer.httpServer.listen(claudeProxyPort, claudeProxyListenAddress, () => {
+  console.log(`claude-proxy listens on http://${claudeProxyListenAddress}:${claudeProxyPort}, web UI at http://${claudeProxyListenAddress}:${claudeProxyPort}/_proxy/`);
 });
 claudeProxyServer.subscriptionAccountUsageMonitor.start();
 void claudeProxyServer.subscriptionAccountUsageMonitor.checkAllSubscriptionAccountUsage().then((usageCheckErrors) => {

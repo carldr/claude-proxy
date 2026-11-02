@@ -243,7 +243,11 @@ describe('claude-proxy', () => {
     fs.rmSync(claudeProxyDirectory, { recursive: true, force: true });
   });
 
-  async function startProxy(respondAsAnthropic: FakeUpstreamResponder, subscriptionAccountsYamlText = subscriptionAccountsYaml) {
+  async function startProxy(
+    respondAsAnthropic: FakeUpstreamResponder,
+    subscriptionAccountsYamlText = subscriptionAccountsYaml,
+    publicHostname: string | null = null,
+  ) {
     const anthropicUpstream = await startFakeUpstream('anthropic', receivedRequests, respondAsAnthropic);
     fakeUpstreamServers.push(anthropicUpstream.server);
     anthropicUpstreamBaseUrl = anthropicUpstream.baseUrl;
@@ -259,6 +263,7 @@ describe('claude-proxy', () => {
       oauthEndpoints: { authorizeUrl: `${tokenServer.baseUrl}/authorize`, tokenUrl: `${tokenServer.baseUrl}/token` },
       webUiDistDirectory: path.join(claudeProxyDirectory, 'no_web_ui'),
       claudeCodeProjectsDirectory: path.join(claudeProxyDirectory, 'no_projects'),
+      publicHostname,
     });
     await new Promise<void>((resolve) => claudeProxyServer.httpServer.listen(0, '127.0.0.1', resolve));
     claudeProxyBaseUrl = `http://127.0.0.1:${(claudeProxyServer.httpServer.address() as AddressInfo).port}`;
@@ -862,6 +867,51 @@ describe('claude-proxy', () => {
     assert.equal(await sendWithHeaders({ host: proxyHost, origin: 'https://example.com' }), 403);
     assert.equal(await sendWithHeaders({ host: `rebound.example.com:${new URL(claudeProxyBaseUrl).port}` }), 403);
     assert.equal(receivedRequests.length, 0);
+  });
+
+  describe('with a public hostname', () => {
+    const publicHostname = 'claude-proxy.example.test';
+
+    function sendWithHeaders(requestHeaders: Record<string, string>) {
+      return new Promise<number>((resolve, reject) => {
+        http.get(new URL(`${claudeProxyBaseUrl}/_proxy/api/subscription-account-status`), { headers: requestHeaders }, (proxyResponse) => {
+          proxyResponse.resume();
+          resolve(proxyResponse.statusCode ?? 0);
+        }).on('error', reject);
+      });
+    }
+
+    function sendConnect(connectTarget: string) {
+      return new Promise<number>((resolve, reject) => {
+        const proxyUrl = new URL(claudeProxyBaseUrl);
+        http
+          .request({ host: proxyUrl.hostname, port: proxyUrl.port, method: 'CONNECT', path: connectTarget })
+          .on('connect', (connectResponse, tunnelSocket) => {
+            tunnelSocket.destroy();
+            resolve(connectResponse.statusCode ?? 0);
+          })
+          .on('error', reject)
+          .end();
+      });
+    }
+
+    test('accepts a request addressed to the public hostname, with no Origin or its https Origin', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}), subscriptionAccountsYaml, publicHostname);
+      assert.equal(await sendWithHeaders({ host: publicHostname }), 200);
+      assert.equal(await sendWithHeaders({ host: publicHostname, origin: `https://${publicHostname}` }), 200);
+    });
+
+    test('refuses a request to the public hostname from another Origin', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}), subscriptionAccountsYaml, publicHostname);
+      assert.equal(await sendWithHeaders({ host: publicHostname, origin: 'https://evil.example.test' }), 403);
+      assert.equal(await sendWithHeaders({ host: 'other.example.test' }), 403);
+    });
+
+    test('refuses every CONNECT when a public hostname is set', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}), subscriptionAccountsYaml, publicHostname);
+      assert.equal(await sendConnect('api.anthropic.com:443'), 405);
+      assert.equal(await sendConnect('example.com:443'), 405);
+    });
   });
 
   test('answers paths outside the Anthropic API locally and does not record them', async () => {
