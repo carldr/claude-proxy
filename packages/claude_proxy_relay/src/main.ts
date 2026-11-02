@@ -21,6 +21,7 @@ const claudeProxyRelay = createClaudeProxyRelay({
   anthropicApiHost: 'api.anthropic.com',
   anthropicApiPort: 443,
   tunnelUpgradeTimeoutMilliseconds: 5000,
+  certificateAuthorityDownloadRetryMilliseconds: 60_000,
 });
 claudeProxyRelay.httpServer.listen(claudeProxyRelayPort, '127.0.0.1', () => {
   console.log(`claude-proxy-relay listens on http://127.0.0.1:${claudeProxyRelayPort} and relays api.anthropic.com to ${claudeProxyRelayConfiguration.centralUrl.origin}`);

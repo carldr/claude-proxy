@@ -218,15 +218,15 @@ The relay connects Claude Code on one machine to a central claude-proxy. It list
 1. Make the relay directory, `~/.claude-proxy-relay`. `CLAUDE_PROXY_RELAY_DIRECTORY` changes it.
 2. Write the central proxy's URL, such as `https://claude-proxy.example.com`, to `central_url` in that directory.
 3. Write your Gateway Auth token to `gateway_auth_token` in that directory.
-4. Make the token file private: `chmod 600 ~/.claude-proxy-relay/gateway_auth_token`.
+4. Make both files private: `chmod 600 ~/.claude-proxy-relay/central_url ~/.claude-proxy-relay/gateway_auth_token`.
 5. Start the relay with `pnpm start:relay`. `CLAUDE_PROXY_RELAY_PORT` changes the port.
 6. Set `HTTPS_PROXY=http://127.0.0.1:4100` and `NODE_EXTRA_CA_CERTS=~/.claude-proxy-relay/certificate_authority.pem` for Claude Code.
 
-The relay does not start when a file is missing, or when the group or others can read `gateway_auth_token`. It never logs the token.
+The relay does not start when a file is missing, or when the group or others can read `central_url` or `gateway_auth_token`. It never logs the token.
 
-At each start, the relay downloads the central certificate authority to `certificate_authority.pem`. It replaces the file only with a certificate. When the download fails, it keeps the existing file. Claude Code reads the file when it starts, so start Claude Code after the first download.
+At each start, the relay downloads the central certificate authority to `certificate_authority.pem`. It replaces the file only with a certificate. When the download fails, it keeps the existing file. While the file does not exist, the relay tries the download again every minute. Claude Code reads the file when it starts, so start Claude Code after the first download.
 
-For each `CONNECT api.anthropic.com:443`, the relay opens a tunnel to the central proxy's `/_proxy/tunnel`, with your token in `X-Gateway-Auth-Token`. The central proxy decrypts and records the connection. When the central proxy gives no 101 within 5 seconds, the relay connects to `api.anthropic.com` directly. Claude Code then uses its own login, and nothing records the requests. The relay logs one line for each fallback, at most once a minute. The relay connects every other CONNECT target from your machine.
+For each `CONNECT api.anthropic.com:443`, the relay opens a tunnel to the central proxy's `/_proxy/tunnel`, with your token in `X-Gateway-Auth-Token`. The central proxy decrypts and records the connection. Until `certificate_authority.pem` exists, the relay connects to `api.anthropic.com` directly, because Claude Code cannot trust the central proxy without it. The relay also connects directly when the central proxy gives no 101 to `claude-proxy-tunnel` within 5 seconds. Claude Code then uses its own login, and nothing records the requests. The relay logs one line for each fallback, at most once a minute. The relay connects every other CONNECT target from your machine.
 
 The menu bar app reads `/_proxy/api/subscription-account-status` from the relay. The relay gets it from the central proxy, and answers 502 when the central proxy fails. Every other request gets 404. The relay accepts requests only from a loopback address, with the Host `127.0.0.1` or `localhost` on its port.
 

@@ -42,11 +42,13 @@ export interface ClaudeProxyRelayOptions {
   anthropicApiPort: number;
   /** How long the relay waits for the central claude-proxy's 101 before it tunnels directly. */
   tunnelUpgradeTimeoutMilliseconds: number;
+  /** How long the relay waits before it downloads the certificate authority again, while `certificate_authority.pem` is missing. */
+  certificateAuthorityDownloadRetryMilliseconds: number;
 }
 
 export interface ClaudeProxyRelay {
   httpServer: Server;
-  /** Destroys the open tunnels, stops the server and waits for the start-up certificate download. */
+  /** Destroys the open tunnels, stops the server and the certificate download retries, and waits for a running download. */
   close(): Promise<void>;
 }
 
@@ -58,17 +60,22 @@ export interface ClaudeProxyRelayConfiguration {
 
 /**
  * Reads `central_url` and `gateway_auth_token` from `relayDirectory` and trims them. It throws, and names the file,
- * when a file is missing or empty, when the URL is not `http:` or `https:`, or when the group or others can read the token.
+ * when a file is missing or empty, when the URL is not `http:` or `https:`, or when the group or others can read a file.
  */
 export function readClaudeProxyRelayConfiguration(relayDirectory: string): ClaudeProxyRelayConfiguration {
   const centralUrlPath = path.join(relayDirectory, 'central_url');
   const gatewayAuthTokenPath = path.join(relayDirectory, 'gateway_auth_token');
   const readRequiredFile = (requiredFilePath: string) => {
     let fileContents: string;
+    let fileMode: number;
     try {
       fileContents = fs.readFileSync(requiredFilePath, 'utf8').trim();
+      fileMode = fs.statSync(requiredFilePath).mode;
     } catch (error) {
       throw new Error(`claude-proxy-relay cannot read ${requiredFilePath}: ${(error as Error).message}`);
+    }
+    if ((fileMode & 0o077) !== 0) {
+      throw new Error(`claude-proxy-relay refuses ${requiredFilePath}, because the group or others can read it. Run: chmod 600 ${requiredFilePath}`);
     }
     if (fileContents === '') throw new Error(`claude-proxy-relay found ${requiredFilePath} empty.`);
     return fileContents;
@@ -79,9 +86,6 @@ export function readClaudeProxyRelayConfiguration(relayDirectory: string): Claud
     throw new Error(`claude-proxy-relay needs an http: or https: URL in ${centralUrlPath}.`);
   }
   const gatewayAuthToken = readRequiredFile(gatewayAuthTokenPath);
-  if ((fs.statSync(gatewayAuthTokenPath).mode & 0o077) !== 0) {
-    throw new Error(`claude-proxy-relay refuses ${gatewayAuthTokenPath}, because the group or others can read it. Run: chmod 600 ${gatewayAuthTokenPath}`);
-  }
   return { centralUrl, gatewayAuthToken };
 }
 
@@ -181,6 +185,12 @@ export function createClaudeProxyRelay(options: ClaudeProxyRelayOptions): Claude
         tunnelDirectly(`the central claude-proxy answered ${upgradeResponse.statusCode}`);
         return;
       }
+      // A 101 to another protocol comes from a server that is not claude-proxy, and must not get Claude Code's TLS bytes.
+      if (upgradeResponse.headers.upgrade?.toLowerCase() !== claudeProxyTunnelUpgradeToken) {
+        centralSocket.destroy();
+        tunnelDirectly(`the central claude-proxy answered 101 with Upgrade: ${upgradeResponse.headers.upgrade ?? '(none)'}`);
+        return;
+      }
       isSettled = true;
       clearTimeout(tunnelUpgradeTimer);
       clientSocket.write(connectAcceptedResponseHead);
@@ -245,9 +255,10 @@ export function createClaudeProxyRelay(options: ClaudeProxyRelayOptions): Claude
       });
   };
 
+  const certificateAuthorityFilePath = path.join(options.relayDirectory, certificateAuthorityFileName);
+
   /** Writes the central certificate authority to the relay directory. Any other answer keeps the existing file. */
   const downloadCertificateAuthority = async () => {
-    const certificateAuthorityFilePath = path.join(options.relayDirectory, certificateAuthorityFileName);
     try {
       const centralAnswer = await getFromCentral(certificateAuthorityPath, certificateAuthorityMaximumBytes);
       const certificateAuthorityPem = centralAnswer.body.toString('utf8');
@@ -285,7 +296,13 @@ export function createClaudeProxyRelay(options: ClaudeProxyRelayOptions): Claude
     if (connectRequestHead.length > 0) clientSocket.unshift(connectRequestHead);
     const connectTarget = connectRequest.url ?? '';
     if (connectTarget === relayedAnthropicApiConnectTarget) {
-      relayAnthropicApiConnection(clientSocket);
+      // Claude Code trusts the central claude-proxy only through this file, so without it a central tunnel fails TLS.
+      if (fs.existsSync(certificateAuthorityFilePath)) {
+        relayAnthropicApiConnection(clientSocket);
+      } else {
+        logFallback(`${certificateAuthorityFilePath} does not exist yet`);
+        tunnelConnection(options.anthropicApiHost, options.anthropicApiPort, clientSocket);
+      }
       return;
     }
     const targetUrl = URL.parse(`http://${connectTarget}`);
@@ -296,13 +313,26 @@ export function createClaudeProxyRelay(options: ClaudeProxyRelayOptions): Claude
     tunnelConnection(targetUrl.hostname.replace(/^\[(.*)\]$/, '$1'), Number(targetUrl.port), clientSocket);
   });
 
-  const certificateAuthorityDownload = downloadCertificateAuthority();
+  let isRelayClosing = false;
+  let certificateAuthorityDownloadRetryTimer: NodeJS.Timeout | undefined;
+  let certificateAuthorityDownload: Promise<void> = Promise.resolve();
+  /** Downloads the certificate authority, and again after `certificateAuthorityDownloadRetryMilliseconds` while the file is missing. */
+  const downloadCertificateAuthorityUntilPresent = () => {
+    certificateAuthorityDownload = downloadCertificateAuthority().then(() => {
+      if (isRelayClosing || fs.existsSync(certificateAuthorityFilePath)) return;
+      certificateAuthorityDownloadRetryTimer = setTimeout(downloadCertificateAuthorityUntilPresent, options.certificateAuthorityDownloadRetryMilliseconds);
+      certificateAuthorityDownloadRetryTimer.unref();
+    });
+  };
+  downloadCertificateAuthorityUntilPresent();
   let relayClosing: Promise<void> | null = null;
 
   return {
     httpServer,
     close() {
       relayClosing ??= (async () => {
+        isRelayClosing = true;
+        clearTimeout(certificateAuthorityDownloadRetryTimer);
         httpServer.closeAllConnections();
         for (const openSocket of openSockets) openSocket.destroy();
         if (httpServer.listening) await new Promise<void>((resolve) => httpServer.close(() => resolve()));

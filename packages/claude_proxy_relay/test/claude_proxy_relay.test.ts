@@ -11,6 +11,8 @@ import { createClaudeProxyRelay, readClaudeProxyRelayConfiguration } from '../sr
 
 const gatewayAuthToken = 'relay-test-gateway-auth-token';
 const certificateAuthorityPem = '-----BEGIN CERTIFICATE-----\nMIIBfakecertificate\n-----END CERTIFICATE-----\n';
+/** A certificate authority file from an earlier download, which the fake central service's certificate replaces. */
+const existingCertificateAuthorityPem = '-----BEGIN CERTIFICATE-----\nexisting\n-----END CERTIFICATE-----\n';
 const subscriptionAccountStatusBody = JSON.stringify({ subscriptionAccounts: [{ name: 'Work', weeklyUtilization: 0.4 }] });
 
 /** What the fake central service received: each upgrade request and each plain request. */
@@ -20,18 +22,24 @@ interface FakeCentralService {
   close(): Promise<void>;
 }
 
-type FakeCentralUpgradeAnswer = 'switch_protocols_and_echo' | 'redirect_to_login';
+type FakeCentralUpgradeAnswer = 'switch_protocols_and_echo' | 'switch_protocols_to_websocket' | 'redirect_to_login';
 
-/** A local HTTP server that stands in for the central claude-proxy behind Caddy. */
-async function startFakeCentralService(upgradeAnswer: FakeCentralUpgradeAnswer): Promise<FakeCentralService> {
+/**
+ * A local HTTP server that stands in for the central claude-proxy behind Caddy. It answers the first
+ * `certificateAuthorityFailureCount` certificate requests with 503.
+ */
+async function startFakeCentralService(upgradeAnswer: FakeCentralUpgradeAnswer, certificateAuthorityFailureCount = 0): Promise<FakeCentralService> {
   const receivedRequests: FakeCentralService['receivedRequests'] = [];
   const openSockets = new Set<Duplex>();
+  let certificateAuthorityRequestCount = 0;
   const fakeCentralServer = http.createServer((centralRequest, centralResponse) => {
     receivedRequests.push({ method: centralRequest.method ?? '', path: centralRequest.url ?? '', headers: centralRequest.headers });
     if (centralRequest.url === '/_proxy/api/subscription-account-status') {
       centralResponse.writeHead(200, { 'content-type': 'application/json' }).end(subscriptionAccountStatusBody);
     } else if (centralRequest.url === '/_proxy/certificate_authority.pem') {
-      centralResponse.writeHead(200, { 'content-type': 'application/x-pem-file' }).end(certificateAuthorityPem);
+      certificateAuthorityRequestCount += 1;
+      if (certificateAuthorityRequestCount <= certificateAuthorityFailureCount) centralResponse.writeHead(503).end();
+      else centralResponse.writeHead(200, { 'content-type': 'application/x-pem-file' }).end(certificateAuthorityPem);
     } else {
       centralResponse.writeHead(404).end();
     }
@@ -42,6 +50,11 @@ async function startFakeCentralService(upgradeAnswer: FakeCentralUpgradeAnswer):
     receivedRequests.push({ method: upgradeRequest.method ?? '', path: upgradeRequest.url ?? '', headers: upgradeRequest.headers });
     if (upgradeAnswer === 'redirect_to_login') {
       centralSocket.end('HTTP/1.1 302 Found\r\nlocation: https://gateway-auth.example/login\r\ncontent-length: 0\r\nconnection: close\r\n\r\n');
+      return;
+    }
+    if (upgradeAnswer === 'switch_protocols_to_websocket') {
+      centralSocket.write('HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n');
+      centralSocket.on('data', (tunnelChunk: Buffer) => centralSocket.write(`websocket:${tunnelChunk.toString('utf8')}`));
       return;
     }
     centralSocket.write('HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: claude-proxy-tunnel\r\n\r\n');
@@ -164,7 +177,15 @@ describe('claude_proxy_relay', () => {
     fs.rmSync(relayDirectory, { recursive: true, force: true });
   });
 
-  async function startRelay(centralUrl: URL, tunnelUpgradeTimeoutMilliseconds = 5000) {
+  /**
+   * Starts a relay against `centralUrl`. By default it first writes an existing `certificate_authority.pem`,
+   * because the relay tunnels directly without one.
+   */
+  async function startRelay(
+    centralUrl: URL,
+    { tunnelUpgradeTimeoutMilliseconds = 5000, hasCertificateAuthorityFile = true, certificateAuthorityDownloadRetryMilliseconds = 60_000 } = {},
+  ) {
+    if (hasCertificateAuthorityFile) fs.writeFileSync(path.join(relayDirectory, 'certificate_authority.pem'), existingCertificateAuthorityPem);
     const claudeProxyRelay = createClaudeProxyRelay({
       centralUrl,
       gatewayAuthToken,
@@ -172,14 +193,15 @@ describe('claude_proxy_relay', () => {
       anthropicApiHost: '127.0.0.1',
       anthropicApiPort: fakeAnthropicServer.port,
       tunnelUpgradeTimeoutMilliseconds,
+      certificateAuthorityDownloadRetryMilliseconds,
     });
     await new Promise<void>((resolve) => claudeProxyRelay.httpServer.listen(0, '127.0.0.1', resolve));
     closeAfterTest.unshift(() => claudeProxyRelay.close());
     return { claudeProxyRelay, relayPort: (claudeProxyRelay.httpServer.address() as AddressInfo).port };
   }
 
-  async function startCentral(upgradeAnswer: FakeCentralUpgradeAnswer) {
-    const fakeCentralService = await startFakeCentralService(upgradeAnswer);
+  async function startCentral(upgradeAnswer: FakeCentralUpgradeAnswer, certificateAuthorityFailureCount = 0) {
+    const fakeCentralService = await startFakeCentralService(upgradeAnswer, certificateAuthorityFailureCount);
     closeAfterTest.push(() => fakeCentralService.close());
     return fakeCentralService;
   }
@@ -211,7 +233,7 @@ describe('claude_proxy_relay', () => {
   test('falls back to a direct tunnel when the central service does not answer within 5 seconds', async () => {
     const silentServer = await startSilentServer();
     closeAfterTest.push(() => silentServer.close());
-    const { relayPort } = await startRelay(silentServer.url, 200);
+    const { relayPort } = await startRelay(silentServer.url, { tunnelUpgradeTimeoutMilliseconds: 200 });
     const startedAt = Date.now();
     const { tunnelAnswer } = await connectThroughRelay(relayPort, 'api.anthropic.com:443', 'client hello', 'anthropic:client hello');
     assert.equal(tunnelAnswer, 'anthropic:client hello');
@@ -303,8 +325,6 @@ describe('claude_proxy_relay', () => {
   });
 
   test('keeps the CA certificate when the central service answers without a certificate', async () => {
-    const existingCertificateAuthorityPem = '-----BEGIN CERTIFICATE-----\nexisting\n-----END CERTIFICATE-----\n';
-    fs.writeFileSync(path.join(relayDirectory, 'certificate_authority.pem'), existingCertificateAuthorityPem);
     const loginPageServer = http.createServer((_, loginPageResponse) => loginPageResponse.writeHead(200, { 'content-type': 'text/html' }).end('<html>Log in</html>'));
     await new Promise<void>((resolve) => loginPageServer.listen(0, '127.0.0.1', resolve));
     closeAfterTest.push(() => new Promise<void>((resolve) => loginPageServer.close(() => resolve())));
@@ -314,8 +334,6 @@ describe('claude_proxy_relay', () => {
   });
 
   test('starts and tunnels directly when the central service is down at start', async () => {
-    const existingCertificateAuthorityPem = '-----BEGIN CERTIFICATE-----\nexisting\n-----END CERTIFICATE-----\n';
-    fs.writeFileSync(path.join(relayDirectory, 'certificate_authority.pem'), existingCertificateAuthorityPem);
     const { relayPort, claudeProxyRelay } = await startRelay(await findClosedPortUrl());
     assert.ok(claudeProxyRelay.httpServer.listening);
     const { connectAnswer, tunnelAnswer } = await connectThroughRelay(relayPort, 'api.anthropic.com:443', 'client hello', 'anthropic:client hello');
@@ -323,6 +341,36 @@ describe('claude_proxy_relay', () => {
     assert.equal(tunnelAnswer, 'anthropic:client hello');
     await claudeProxyRelay.close();
     assert.equal(fs.readFileSync(path.join(relayDirectory, 'certificate_authority.pem'), 'utf8'), existingCertificateAuthorityPem);
+  });
+
+  test('falls back to a direct tunnel when the central service answers 101 to another protocol', async () => {
+    const fakeCentralService = await startCentral('switch_protocols_to_websocket');
+    const { relayPort } = await startRelay(fakeCentralService.url);
+    const { connectAnswer, tunnelAnswer } = await connectThroughRelay(relayPort, 'api.anthropic.com:443', 'client hello', 'anthropic:client hello');
+    assert.equal(connectAnswer, 'HTTP/1.1 200 Connection Established\r\n\r\n');
+    assert.equal(tunnelAnswer, 'anthropic:client hello');
+    assert.ok(fakeCentralService.receivedRequests.some((receivedRequest) => receivedRequest.path === '/_proxy/tunnel'));
+  });
+
+  test('tunnels directly while it has no CA certificate, even when the central service answers 101', async () => {
+    const fakeCentralService = await startCentral('switch_protocols_and_echo', Number.POSITIVE_INFINITY);
+    const { relayPort } = await startRelay(fakeCentralService.url, { hasCertificateAuthorityFile: false });
+    const { connectAnswer, tunnelAnswer } = await connectThroughRelay(relayPort, 'api.anthropic.com:443', 'client hello', 'anthropic:client hello');
+    assert.equal(connectAnswer, 'HTTP/1.1 200 Connection Established\r\n\r\n');
+    assert.equal(tunnelAnswer, 'anthropic:client hello');
+    assert.equal(fakeCentralService.receivedRequests.filter((receivedRequest) => receivedRequest.path === '/_proxy/tunnel').length, 0);
+  });
+
+  test('retries a failed CA download, and then sends CONNECTs through the central tunnel', async () => {
+    const fakeCentralService = await startCentral('switch_protocols_and_echo', 2);
+    const { relayPort } = await startRelay(fakeCentralService.url, { hasCertificateAuthorityFile: false, certificateAuthorityDownloadRetryMilliseconds: 50 });
+    const certificateAuthorityFilePath = path.join(relayDirectory, 'certificate_authority.pem');
+    const waitDeadline = Date.now() + 2000;
+    while (!fs.existsSync(certificateAuthorityFilePath) && Date.now() < waitDeadline) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(fs.readFileSync(certificateAuthorityFilePath, 'utf8'), certificateAuthorityPem);
+    assert.equal(fakeCentralService.receivedRequests.filter((receivedRequest) => receivedRequest.path === '/_proxy/certificate_authority.pem').length, 3);
+    const { tunnelAnswer } = await connectThroughRelay(relayPort, 'api.anthropic.com:443', 'client hello', 'central:client hello');
+    assert.equal(tunnelAnswer, 'central:client hello');
   });
 });
 
@@ -343,7 +391,7 @@ describe('readClaudeProxyRelayConfiguration', () => {
   }
 
   test('reads and trims the central URL and the Gateway Auth token', () => {
-    writeRelayFile('central_url', ' https://claude-proxy.example.com\n', 0o644);
+    writeRelayFile('central_url', ' https://claude-proxy.example.com\n', 0o600);
     writeRelayFile('gateway_auth_token', `${gatewayAuthToken}\n`, 0o600);
     const relayConfiguration = readClaudeProxyRelayConfiguration(relayDirectory);
     assert.equal(relayConfiguration.centralUrl.href, 'https://claude-proxy.example.com/');
@@ -354,12 +402,12 @@ describe('readClaudeProxyRelayConfiguration', () => {
     writeRelayFile('gateway_auth_token', gatewayAuthToken, 0o600);
     assert.throws(() => readClaudeProxyRelayConfiguration(relayDirectory), new RegExp(path.join(relayDirectory, 'central_url')));
     fs.rmSync(path.join(relayDirectory, 'gateway_auth_token'));
-    writeRelayFile('central_url', 'https://claude-proxy.example.com', 0o644);
+    writeRelayFile('central_url', 'https://claude-proxy.example.com', 0o600);
     assert.throws(() => readClaudeProxyRelayConfiguration(relayDirectory), new RegExp(path.join(relayDirectory, 'gateway_auth_token')));
   });
 
   test('refuses a Gateway Auth token that the group or others can read, and names the file', () => {
-    writeRelayFile('central_url', 'https://claude-proxy.example.com', 0o644);
+    writeRelayFile('central_url', 'https://claude-proxy.example.com', 0o600);
     writeRelayFile('gateway_auth_token', gatewayAuthToken, 0o640);
     assert.throws(
       () => readClaudeProxyRelayConfiguration(relayDirectory),
@@ -367,8 +415,14 @@ describe('readClaudeProxyRelayConfiguration', () => {
     );
   });
 
+  test('refuses a central URL file that the group or others can read, and names the file', () => {
+    writeRelayFile('central_url', 'https://claude-proxy.example.com', 0o644);
+    writeRelayFile('gateway_auth_token', gatewayAuthToken, 0o600);
+    assert.throws(() => readClaudeProxyRelayConfiguration(relayDirectory), (error: Error) => error.message.includes(`refuses ${path.join(relayDirectory, 'central_url')}`));
+  });
+
   test('refuses a central URL that is not http or https', () => {
-    writeRelayFile('central_url', 'ftp://claude-proxy.example.com', 0o644);
+    writeRelayFile('central_url', 'ftp://claude-proxy.example.com', 0o600);
     writeRelayFile('gateway_auth_token', gatewayAuthToken, 0o600);
     assert.throws(() => readClaudeProxyRelayConfiguration(relayDirectory), /central_url/);
   });
