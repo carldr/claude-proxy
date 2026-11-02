@@ -50,9 +50,11 @@ Each machine that runs Claude Code trusts `/data/certificate_authority.pem`, or 
 Run these commands once. They send `claude-proxy.example.com` to port 4100 on docker-host, behind Gateway Auth. Replace the team ID with the ID of the team `gateway-auth-claude-proxy`.
 
 ```sh
-moss proxy add --domain claude-proxy.example.com --vm-name docker-host --target-port 4100
+moss proxy add --domain claude-proxy.example.com --vm-name docker-host --target-port 4100 --proxy-mode none --create-dns-cname-record
 moss proxy set-gateway-auth-team-id --domain claude-proxy.example.com --gateway-auth-team-id <team ID>
 ```
+
+`--proxy-mode none` is required. Cloudflare does not carry `Upgrade: claude-proxy-tunnel`, so with Cloudflare every tunnel would fall back to a direct connection with no error.
 
 Make a Gateway Auth token for each machine in your gateway-auth-repository checkout. The command prints the token once.
 

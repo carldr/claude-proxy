@@ -299,13 +299,14 @@ Each step is a command with a check. Stop and report on any failed check.
   ```
 - [ ] **Step 5:** Make the tokens `first-mac`, `second-mac` and `roy-host` with the Task 10 script. Write each into the `gateway_auth_token` of its machine, mode 600.
 - [ ] **Step 6:** Check Review Focus 1. With the first Mac token, the Task 8 relay test client against `https://claude-proxy.example.com` gets `101`. A wrong token gets no `101`.
-- [ ] **Step 7:** Cut-over, design section "Cut-over" steps 1–6. The container stays stopped from the first copy until the first Mac server agent is stopped.
+- [ ] **Step 7:** Cut-over, design section "Cut-over" steps 1–7. The container stays stopped from the first copy until the first Mac server agent is stopped.
   1. Run `docker compose stop` in `/root/claude-proxy`. Check with `docker compose ps` that it is stopped.
-  2. rsync `requests.sqlite`, `subscription_accounts.yml` and `pricing.yml` to the volume's directory, `docker volume inspect claude-proxy-data --format '{{.Mountpoint}}'`, while the first Mac proxy runs.
-  3. Run `launchctl bootout gui/$(id -u)/local.claude-proxy.server`.
-  4. rsync again, then `chown 1000:1000` and `chmod 600` the copied files. The server refuses files that another user owns, and the container runs as `node` (UID 1000).
-  5. Change the routes to absolute paths in the copy of `subscription_accounts.yml` on the volume.
-  6. Run `docker compose start`.
-- [ ] **Step 8:** Install the relay agent on the first Mac (`pnpm install_launchd_agents`). Check that one new Claude Code request shows in the web UI with its project, and that the menu bar shows the pies.
+  2. Delete `requests.sqlite-wal` and `requests.sqlite-shm` from the volume's directory, or stop and report if they exist after Sub-step 1. Then rsync `requests.sqlite`, `subscription_accounts.yml` and `pricing.yml` to the volume's directory, `docker volume inspect claude-proxy-data --format '{{.Mountpoint}}'`, while the first Mac proxy runs.
+  3. Quit every Claude Code session on the first Mac. A running session keeps `HTTPS_PROXY=http://127.0.0.1:4100` with no credential, so it gets connection refused after the stop and 407 after the relay starts.
+  4. Run `launchctl bootout gui/$(id -u)/local.claude-proxy.server`.
+  5. rsync again, then `chown 1000:1000` and `chmod 600` the copied files. The server refuses files that another user owns, and the container runs as `node` (UID 1000).
+  6. Change the routes to absolute paths in the copy of `subscription_accounts.yml` on the volume.
+  7. Run `docker compose start`.
+- [ ] **Step 8:** Install the relay agent on the first Mac (`pnpm install_launchd_agents`). A session that starts after the install uses the relay. Check that one new Claude Code request shows in the web UI with its project, and that the menu bar shows the pies.
 - [ ] **Step 9:** Install the relay on the second Mac (Task 9 launchd) and on roy-host (the systemd unit, through the Roy dotfiles). Check one request from each in the web UI.
 - [ ] **Step 10:** Delete `~/.claude-proxy/api.anthropic.com*.pem` on the first Mac.

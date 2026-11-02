@@ -117,15 +117,16 @@ moss proxy set-gateway-auth-team-id --domain claude-proxy.example.com --gateway-
 The container stays stopped from the first copy until the first Mac proxy is stopped. A running central server can refresh the grants while the first Mac proxy runs, and two servers that refresh one grant log each other out. A running server also holds `requests.sqlite` open.
 
 1. Deploy the central claude-proxy with an empty volume. Make the CA: `docker compose exec claude_proxy sh scripts/create_certificate_authority.sh /data`. Check `https://claude-proxy.example.com/_proxy/` through Gateway Auth. Then run `docker compose stop`.
-2. Copy `~/.claude-proxy/requests.sqlite` (1.6 GB after the request body parts migration), `subscription_accounts.yml` and `pricing.yml` to the volume's directory with rsync, while the first Mac proxy still runs and the container is stopped.
-3. Stop the first Mac proxy: `launchctl bootout gui/$(id -u)/local.claude-proxy.server`.
-4. Run rsync again. It copies only the changes since step 2. The WAL is checkpointed when the proxy stops, so `requests.sqlite` alone is complete. Then run `chown 1000:1000` and `chmod 600` on the copied files.
-5. Change the project routes to absolute paths in the copy of `subscription_accounts.yml` on the volume.
-6. Run `docker compose start`. The central claude-proxy now holds the grants. The first Mac proxy must not start again.
-7. Install the relay agent on the first Mac, and check one Claude Code session in the web UI.
-8. Install the relay on the second Mac and on each Roy host. The second Mac has never run claude-proxy, so it has no history to merge.
+2. Delete `requests.sqlite-wal` and `requests.sqlite-shm` from the volume's directory, or stop and report if they exist after `docker compose stop`. SQLite would apply the leftover log of the empty database to the copied file and corrupt it. Then copy `~/.claude-proxy/requests.sqlite` (1.6 GB after the request body parts migration), `subscription_accounts.yml` and `pricing.yml` to the volume's directory with rsync, while the first Mac proxy still runs and the container is stopped.
+3. Quit every Claude Code session on the first Mac. A running session keeps `HTTPS_PROXY=http://127.0.0.1:4100` with no credential. After the server stops it gets connection refused, and after the relay starts it gets 407. It never connects directly.
+4. Stop the first Mac proxy: `launchctl bootout gui/$(id -u)/local.claude-proxy.server`.
+5. Run rsync again. It copies only the changes since step 2. The WAL is checkpointed when the proxy stops, so `requests.sqlite` alone is complete. Then run `chown 1000:1000` and `chmod 600` on the copied files.
+6. Change the project routes to absolute paths in the copy of `subscription_accounts.yml` on the volume.
+7. Run `docker compose start`. The central claude-proxy now holds the grants. The first Mac proxy must not start again.
+8. Install the relay agent on the first Mac, and check one Claude Code session in the web UI. A session that starts after the relay install uses the relay.
+9. Install the relay on the second Mac and on each Roy host. The second Mac has never run claude-proxy, so it has no history to merge.
 
-Requests between steps 3 and 7 go directly to Anthropic and are not recorded.
+Between steps 4 and 8, a new Claude Code session started with the zsh function connects directly to Anthropic, and nothing records its requests. A session started with another method fails.
 
 The relay needs Node.js 23.6 or later. The Roy hosts move to Node.js 26 before the deployment.
 
