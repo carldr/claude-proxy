@@ -29,8 +29,8 @@ export const emptySubscriptionAccountsConfig: SubscriptionAccountsConfig = {
   defaultSubscriptionAccountName: null,
 };
 
-/** Validates the parsed contents of `subscription_accounts.yml`. A leading `~` in a pattern becomes `homeDirectory`. */
-export function parseSubscriptionAccountsConfig(yamlValue: unknown, homeDirectory: string): SubscriptionAccountsConfig {
+/** Validates the parsed contents of `subscription_accounts.yml`. Each project route pattern must be an absolute path. */
+export function parseSubscriptionAccountsConfig(yamlValue: unknown): SubscriptionAccountsConfig {
   if (yamlValue === null || yamlValue === undefined) return emptySubscriptionAccountsConfig;
   const yamlObject = yamlValue as {
     subscription_accounts?: unknown;
@@ -92,13 +92,10 @@ export function parseSubscriptionAccountsConfig(yamlValue: unknown, homeDirector
       if (!accountNames.has(subscriptionAccountName)) {
         throw new Error(`${entryPath}.subscription_account "${subscriptionAccountName}" is not in subscription_accounts`);
       }
-      return {
-        projectPathPattern:
-          projectPathPattern === '~' || projectPathPattern.startsWith('~/')
-            ? homeDirectory + projectPathPattern.slice(1)
-            : projectPathPattern,
-        subscriptionAccountName,
-      };
+      if (!projectPathPattern.startsWith('/')) {
+        throw new Error(`${entryPath}.project_path_pattern must be an absolute path that starts with "/"`);
+      }
+      return { projectPathPattern, subscriptionAccountName };
     },
   );
 

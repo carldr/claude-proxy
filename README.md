@@ -153,9 +153,9 @@ subscription_accounts:
   - name: Personal
     colour: "#ba8048"
 project_routes:
-  - project_path_pattern: ~/Development/client*
+  - project_path_pattern: /Users/example_user/Development/client*
     subscription_account: Work
-  - project_path_pattern: ~/Development/work-dev
+  - project_path_pattern: /Users/example_user/Development/work-dev
     subscription_account: Work
 default_subscription_account: Personal
 ```
@@ -163,7 +163,7 @@ default_subscription_account: Personal
 | Key | Meaning |
 | --- | --- |
 | `subscription_accounts` | The accounts, in failover order. Each has a `name`, a `colour` and an optional `failover_utilization`. |
-| `project_routes` | The first route whose `project_path_pattern` matches the project wins. The pattern is a glob. `~` means your home directory. A pattern also matches every subdirectory of a matching directory. |
+| `project_routes` | The first route whose `project_path_pattern` matches the project wins. The pattern is a glob and must be an absolute path. `~` is not expanded. A pattern also matches every subdirectory of a matching directory. |
 | `failover_utilization` | A key of one account. It is a fraction above 0 and at most 1. The proxy avoids the account at or above this fraction of its 5-hour or weekly window. The default is 1, which means no threshold. A top-level `failover_utilization` is a validation error. |
 | `default_subscription_account` | The account for a project that no route matches, and for a request with no project. Without this key, such a request tries the accounts in file order, with each blocked account last. |
 

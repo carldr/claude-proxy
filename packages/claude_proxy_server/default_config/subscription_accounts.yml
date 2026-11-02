@@ -5,7 +5,7 @@
 # The default is 1, which means no threshold. Accounts log in from the web UI. This file holds no credentials.
 #
 # project_routes: Each route sends the requests of the projects that match "project_path_pattern" to "subscription_account".
-# The pattern is a glob. A leading "~" means the home directory. A pattern also covers every subdirectory of a match.
+# The pattern is a glob. The pattern must be an absolute path: "~" is not expanded. A pattern also covers every subdirectory of a match.
 # The first matching route wins.
 #
 # default_subscription_account: The account for a project that no route matches, and for a request with no project.
@@ -17,8 +17,8 @@ subscription_accounts:
   - name: Personal
     colour: "#ba8048"
 project_routes:
-  - project_path_pattern: ~/Development/client*
+  - project_path_pattern: /Users/example_user/Development/client*
     subscription_account: Work
-  - project_path_pattern: ~/Development/work-dev
+  - project_path_pattern: /Users/example_user/Development/work-dev
     subscription_account: Work
 default_subscription_account: Personal

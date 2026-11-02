@@ -6,22 +6,20 @@ import {
   parseSubscriptionAccountsConfig,
 } from '../src/subscription_accounts_config.ts';
 
-const homeDirectory = '/Users/example_user';
-
 const exampleYaml = {
   subscription_accounts: [
     { name: 'Work', colour: '#a1c63d' },
     { name: 'Personal', colour: '#ba8048' },
   ],
   project_routes: [
-    { project_path_pattern: '~/Development/client*', subscription_account: 'Work' },
-    { project_path_pattern: '~/Development/work-dev', subscription_account: 'Work' },
+    { project_path_pattern: '/Users/example_user/Development/client*', subscription_account: 'Work' },
+    { project_path_pattern: '/Users/example_user/Development/work-dev', subscription_account: 'Work' },
   ],
   default_subscription_account: 'Personal',
 };
 
-test('parses accounts, routes and the default account, and expands ~', () => {
-  const config = parseSubscriptionAccountsConfig(exampleYaml, homeDirectory);
+test('parses accounts, routes and the default account, and keeps the pattern as written', () => {
+  const config = parseSubscriptionAccountsConfig(exampleYaml);
   assert.equal(config.projectRoutes[0].projectPathPattern, '/Users/example_user/Development/client*');
   assert.deepEqual(config.subscriptionAccounts, [
     { name: 'Work', colour: '#a1c63d', failoverUtilization: 1 },
@@ -31,7 +29,7 @@ test('parses accounts, routes and the default account, and expands ~', () => {
 });
 
 test('matches a pattern and every subdirectory of a match', () => {
-  const config = parseSubscriptionAccountsConfig(exampleYaml, homeDirectory);
+  const config = parseSubscriptionAccountsConfig(exampleYaml);
   assert.equal(findSubscriptionAccountNameForProject(config, '/Users/example_user/Development/client_project'), 'Work');
   assert.equal(findSubscriptionAccountNameForProject(config, '/Users/example_user/Development/client_project/src/deep'), 'Work');
   assert.equal(findSubscriptionAccountNameForProject(config, '/Users/example_user/Development/work-dev'), 'Work');
@@ -43,17 +41,16 @@ test('uses the first matching route', () => {
     {
       ...exampleYaml,
       project_routes: [
-        { project_path_pattern: '~/Development/*', subscription_account: 'Personal' },
-        { project_path_pattern: '~/Development/client*', subscription_account: 'Work' },
+        { project_path_pattern: '/Users/example_user/Development/*', subscription_account: 'Personal' },
+        { project_path_pattern: '/Users/example_user/Development/client*', subscription_account: 'Work' },
       ],
     },
-    homeDirectory,
   );
   assert.equal(findSubscriptionAccountNameForProject(config, '/Users/example_user/Development/client_x'), 'Personal');
 });
 
 test('gives the default account to an unmatched project and to a request with no project', () => {
-  const config = parseSubscriptionAccountsConfig(exampleYaml, homeDirectory);
+  const config = parseSubscriptionAccountsConfig(exampleYaml);
   assert.equal(findSubscriptionAccountNameForProject(config, '/tmp/other'), 'Personal');
   assert.equal(findSubscriptionAccountNameForProject(config, null), 'Personal');
 });
@@ -62,8 +59,7 @@ test('rejects a route to an unknown account', () => {
   assert.throws(
     () =>
       parseSubscriptionAccountsConfig(
-        { ...exampleYaml, project_routes: [{ project_path_pattern: '~/x', subscription_account: 'Nobody' }] },
-        homeDirectory,
+        { ...exampleYaml, project_routes: [{ project_path_pattern: '/Users/example_user/x', subscription_account: 'Nobody' }] },
       ),
     /project_routes\[0\]\.subscription_account "Nobody" is not in subscription_accounts/,
   );
@@ -71,7 +67,7 @@ test('rejects a route to an unknown account', () => {
 
 test('rejects a default account that is not listed', () => {
   assert.throws(
-    () => parseSubscriptionAccountsConfig({ ...exampleYaml, default_subscription_account: 'Nobody' }, homeDirectory),
+    () => parseSubscriptionAccountsConfig({ ...exampleYaml, default_subscription_account: 'Nobody' }),
     /default_subscription_account "Nobody" is not in subscription_accounts/,
   );
 });
@@ -81,7 +77,6 @@ test('rejects two accounts with one name', () => {
     () =>
       parseSubscriptionAccountsConfig(
         { subscription_accounts: [{ name: 'Work', colour: '#111111' }, { name: 'Work', colour: '#222222' }] },
-        homeDirectory,
       ),
     /two accounts named "Work"/,
   );
@@ -89,13 +84,13 @@ test('rejects two accounts with one name', () => {
 
 test('rejects an account with an empty colour', () => {
   assert.throws(
-    () => parseSubscriptionAccountsConfig({ subscription_accounts: [{ name: 'Work', colour: ' ' }] }, homeDirectory),
+    () => parseSubscriptionAccountsConfig({ subscription_accounts: [{ name: 'Work', colour: ' ' }] }),
     /subscription_accounts\[0\]\.colour must be a non-empty string/,
   );
 });
 
 test('treats an empty file as no accounts', () => {
-  assert.deepEqual(parseSubscriptionAccountsConfig(null, homeDirectory), emptySubscriptionAccountsConfig);
+  assert.deepEqual(parseSubscriptionAccountsConfig(null), emptySubscriptionAccountsConfig);
 });
 
 test('reads failover_utilization on each account and defaults it to 1', () => {
@@ -107,7 +102,6 @@ test('reads failover_utilization on each account and defaults it to 1', () => {
         { name: 'Personal', colour: '#ba8048' },
       ],
     },
-    homeDirectory,
   );
   assert.deepEqual(config.subscriptionAccounts, [
     { name: 'Work', colour: '#a1c63d', failoverUtilization: 0.98 },
@@ -121,7 +115,6 @@ test('rejects a per-account failover_utilization outside the range', () => {
       () =>
         parseSubscriptionAccountsConfig(
           { subscription_accounts: [{ name: 'Work', colour: '#a1c63d', failover_utilization: invalidValue }] },
-          homeDirectory,
         ),
       /subscription_accounts\[0\]\.failover_utilization must be a number above 0 and at most 1/,
     );
@@ -130,7 +123,23 @@ test('rejects a per-account failover_utilization outside the range', () => {
 
 test('rejects a top-level failover_utilization and says to move it onto the account', () => {
   assert.throws(
-    () => parseSubscriptionAccountsConfig({ ...exampleYaml, failover_utilization: 0.98 }, homeDirectory),
+    () => parseSubscriptionAccountsConfig({ ...exampleYaml, failover_utilization: 0.98 }),
     /failover_utilization is no longer a top-level key\. Move it onto each entry of subscription_accounts/,
   );
 });
+
+for (const [patternKind, projectPathPattern] of [
+  ['starts with ~', '~/Development/x'],
+  ['is relative', 'Development/x'],
+]) {
+  test(`rejects a project route pattern that ${patternKind}`, () => {
+    assert.throws(
+      () =>
+        parseSubscriptionAccountsConfig({
+          ...exampleYaml,
+          project_routes: [{ project_path_pattern: projectPathPattern, subscription_account: 'Work' }],
+        }),
+      /project_routes\[0\]\.project_path_pattern must be an absolute path/,
+    );
+  });
+}

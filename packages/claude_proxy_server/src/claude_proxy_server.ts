@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import http, { type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import os from 'node:os';
 import path from 'node:path';
 import type { Duplex } from 'node:stream';
 import { claudeProxyTunnelPath, claudeProxyTunnelUpgradeToken, handleClaudeProxyTunnelUpgrade, handleHttpsProxyConnect } from './https_proxy_connect_handler.ts';
@@ -136,7 +135,7 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
 
   const subscriptionAccountsConfigFile = new YamlConfigFile<SubscriptionAccountsConfig>(
     path.join(options.claudeProxyDirectory, 'subscription_accounts.yml'),
-    (yamlValue) => parseSubscriptionAccountsConfig(yamlValue, os.homedir()),
+    parseSubscriptionAccountsConfig,
     emptySubscriptionAccountsConfig,
   );
   const modelPricingConfigFile = new YamlConfigFile<ModelPricingTable>(
