@@ -81,7 +81,15 @@ write_launch_agent() {
 </plist>
 PLIST
   launchctl bootout "$user_domain/$launch_agent_label" 2>/dev/null || true
-  launchctl bootstrap "$user_domain" "$launch_agent_path"
+  # launchctl bootstrap fails with error 5 until the agent that bootout stopped has unloaded.
+  bootstrap_attempts=0
+  until launchctl bootstrap "$user_domain" "$launch_agent_path" 2>/dev/null; do
+    bootstrap_attempts=$((bootstrap_attempts + 1))
+    if [ "$bootstrap_attempts" -ge 10 ]; then
+      launchctl bootstrap "$user_domain" "$launch_agent_path"
+    fi
+    sleep 1
+  done
   echo "Started $launch_agent_label ($launch_agent_path)"
 }
 
