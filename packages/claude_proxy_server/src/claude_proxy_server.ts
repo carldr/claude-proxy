@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import http, { type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import net, { type AddressInfo } from 'node:net';
 import path from 'node:path';
 import type { Duplex } from 'node:stream';
+import { GatewayAuthVerifier } from './gateway_auth_verifier.ts';
 import { claudeProxyTunnelPath, claudeProxyTunnelUpgradeToken, handleClaudeProxyTunnelUpgrade, handleHttpsProxyConnect } from './https_proxy_connect_handler.ts';
 import { parseModelPricingConfig, type ModelPricingTable } from './model_pricing_config.ts';
 import { handleProxyRequest } from './proxy_request_handler.ts';
@@ -36,6 +37,11 @@ export interface ClaudeProxyServerOptions {
    * Caddy terminates TLS for this name. When it is set, the proxy refuses every CONNECT.
    */
   publicHostname: string | null;
+  /**
+   * Gateway Auth's `/verify` URL with its `team_id`. The proxy asks it to verify each request addressed to `publicHostname`,
+   * because the proxy's port can be reached without Caddy. A server with a public hostname needs it.
+   */
+  gatewayAuthVerifyUrl: URL | null;
 }
 
 export interface ClaudeProxyServer {
@@ -62,18 +68,35 @@ const anthropicApiPathPrefixes = ['/v1/', '/api/'];
  */
 const requestContentsRetentionDays = 365;
 
+/** How long the proxy keeps a pass from Gateway Auth for one token or one `gate_session` cookie. */
+const gatewayAuthPassCacheMilliseconds = 60_000;
+/** How long the proxy waits for Gateway Auth's `/verify` URL. No answer in this time gives 401. */
+const gatewayAuthVerifyTimeoutMilliseconds = 5000;
+
+/** Returns true for an address in 127.0.0.0/8, for `::1`, and for an IPv4-mapped address in 127.0.0.0/8. */
+function isLoopbackAddress(remoteAddress: string | undefined): boolean {
+  if (remoteAddress === undefined) return false;
+  if (remoteAddress === '::1') return true;
+  const ipv4Address = remoteAddress.startsWith('::ffff:') ? remoteAddress.slice('::ffff:'.length) : remoteAddress;
+  return net.isIPv4(ipv4Address) && ipv4Address.startsWith('127.');
+}
+
 /**
  * Accepts a request only when its Host is 127.0.0.1 or localhost on the proxy's port, and when it has no Origin
  * or the proxy's own Origin. When `publicHostname` is set, it also accepts that Host without a port, with no Origin
  * or the Origin `https://<publicHostname>`. This stops web pages, including pages that use DNS rebinding, from reading recorded
  * requests or from sending requests that the proxy would send with a subscription account's grant. Claude Code sends no Origin header.
+ * When `publicHostname` is set, a loopback Host also needs a loopback connection, because a loopback Host needs no Gateway Auth.
  */
-function isAcceptedRequest(clientRequest: IncomingMessage, httpServer: Server, publicHostname: string | null): boolean {
+export function isAcceptedRequest(clientRequest: IncomingMessage, httpServer: Server, publicHostname: string | null): boolean {
   const proxyPort = (httpServer.address() as AddressInfo).port;
   const localHosts = [`127.0.0.1:${proxyPort}`, `localhost:${proxyPort}`];
   const origin = clientRequest.headers.origin;
   const requestHost = clientRequest.headers.host ?? '';
-  if (localHosts.includes(requestHost)) return origin === undefined || localHosts.some((localHost) => origin === `http://${localHost}`);
+  if (localHosts.includes(requestHost)) {
+    if (publicHostname !== null && !isLoopbackAddress(clientRequest.socket.remoteAddress)) return false;
+    return origin === undefined || localHosts.some((localHost) => origin === `http://${localHost}`);
+  }
   return publicHostname !== null && requestHost === publicHostname && (origin === undefined || origin === `https://${publicHostname}`);
 }
 
@@ -114,6 +137,24 @@ export function makeClaudeProxyFilePrivate(
 
 /** Creates the proxy server. The caller starts it with `httpServer.listen`. */
 export function createClaudeProxyServer(options: ClaudeProxyServerOptions): ClaudeProxyServer {
+  if (options.publicHostname !== null && options.gatewayAuthVerifyUrl === null) {
+    throw new Error(
+      'claude-proxy does not start: CLAUDE_PROXY_PUBLIC_HOSTNAME is set, but CLAUDE_PROXY_GATEWAY_AUTH_VERIFY_URL is not. ' +
+        'Without it, a request that does not pass through Caddy needs no Gateway Auth login.',
+    );
+  }
+  // Only a server with a public hostname asks Gateway Auth, and only for requests addressed to that hostname.
+  const gatewayAuthVerifier =
+    options.publicHostname !== null && options.gatewayAuthVerifyUrl !== null
+      ? new GatewayAuthVerifier(options.gatewayAuthVerifyUrl, {
+          cacheMilliseconds: gatewayAuthPassCacheMilliseconds,
+          timeoutMilliseconds: gatewayAuthVerifyTimeoutMilliseconds,
+        })
+      : null;
+  // The caller has checked the request with `isAcceptedRequest`, so a Host other than `publicHostname` is a loopback Host.
+  const isVerifiedByGatewayAuth = async (clientRequest: IncomingMessage): Promise<boolean> =>
+    gatewayAuthVerifier === null || clientRequest.headers.host !== options.publicHostname || gatewayAuthVerifier.isVerified(clientRequest.headers);
+
   // `requests.sqlite` holds the refresh tokens of the subscription accounts, so only the user can read the directory.
   fs.mkdirSync(options.claudeProxyDirectory, { recursive: true, mode: 0o700 });
   makeClaudeProxyFilePrivate(options.claudeProxyDirectory, options.claudeProxyDirectory, 0o700);
@@ -206,6 +247,11 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
       clientResponse.end(`claude-proxy accepts only requests addressed to ${acceptedHostNames}.`);
       return;
     }
+    if (!(await isVerifiedByGatewayAuth(clientRequest))) {
+      clientResponse.writeHead(401, { 'content-type': 'text/plain' });
+      clientResponse.end(`claude-proxy needs a Gateway Auth login or X-Gateway-Auth-Token for requests addressed to ${options.publicHostname}.`);
+      return;
+    }
     if (requestPath.startsWith(webApiPathPrefix)) {
       await handleWebApiRequest(clientRequest, clientResponse, {
         requestDatabase,
@@ -278,18 +324,33 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
       clientSocket.end(`HTTP/1.1 ${statusLine}\r\ncontent-type: text/plain\r\nconnection: close\r\n\r\n${message}\n`);
     if (!isAcceptedRequest(upgradeRequest, httpServer, options.publicHostname)) {
       refuseUpgrade('403 Forbidden', 'claude-proxy does not accept requests addressed to this host name.');
-    } else if ((upgradeRequest.url ?? '').split('?')[0] !== claudeProxyTunnelPath) {
-      refuseUpgrade('404 Not Found', `claude-proxy upgrades only ${claudeProxyTunnelPath}.`);
-    } else if (upgradeRequest.headers.upgrade?.toLowerCase() !== claudeProxyTunnelUpgradeToken) {
-      refuseUpgrade('400 Bad Request', `claude-proxy upgrades only to ${claudeProxyTunnelUpgradeToken}.`);
-    } else {
-      handleClaudeProxyTunnelUpgrade(upgradeRequestHead, clientSocket, {
-        anthropicApiCertificatePath: path.join(options.claudeProxyDirectory, 'api.anthropic.com.pem'),
-        anthropicApiCertificateKeyPath: path.join(options.claudeProxyDirectory, 'api.anthropic.com-key.pem'),
-        interceptedAnthropicApiServer,
-        trackClientSocket: trackConnectClientSocket,
-      });
+      return;
     }
+    // `close()` destroys the socket if the server closes while the proxy waits for Gateway Auth.
+    trackConnectClientSocket(clientSocket);
+    isVerifiedByGatewayAuth(upgradeRequest)
+      .then((isVerified) => {
+        // The client can close the socket while the proxy waits for Gateway Auth.
+        if (clientSocket.destroyed) return;
+        if (!isVerified) {
+          refuseUpgrade('401 Unauthorized', `claude-proxy needs a Gateway Auth login or X-Gateway-Auth-Token for requests addressed to ${options.publicHostname}.`);
+        } else if ((upgradeRequest.url ?? '').split('?')[0] !== claudeProxyTunnelPath) {
+          refuseUpgrade('404 Not Found', `claude-proxy upgrades only ${claudeProxyTunnelPath}.`);
+        } else if (upgradeRequest.headers.upgrade?.toLowerCase() !== claudeProxyTunnelUpgradeToken) {
+          refuseUpgrade('400 Bad Request', `claude-proxy upgrades only to ${claudeProxyTunnelUpgradeToken}.`);
+        } else {
+          handleClaudeProxyTunnelUpgrade(upgradeRequestHead, clientSocket, {
+            anthropicApiCertificatePath: path.join(options.claudeProxyDirectory, 'api.anthropic.com.pem'),
+            anthropicApiCertificateKeyPath: path.join(options.claudeProxyDirectory, 'api.anthropic.com-key.pem'),
+            interceptedAnthropicApiServer,
+            trackClientSocket: trackConnectClientSocket,
+          });
+        }
+      })
+      .catch((error: Error) => {
+        console.error(`claude-proxy failed on the tunnel upgrade ${upgradeRequest.url}: ${error.stack}`);
+        clientSocket.destroy();
+      });
   });
 
   return {

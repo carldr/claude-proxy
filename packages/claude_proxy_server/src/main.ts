@@ -13,6 +13,7 @@ const claudeProxyServer = createClaudeProxyServer({
   oauthEndpoints: anthropicOAuthEndpoints,
   webUiDistDirectory: path.resolve(import.meta.dirname, '..', '..', 'claude_proxy_web_ui', 'dist'),
   publicHostname: process.env.CLAUDE_PROXY_PUBLIC_HOSTNAME || null,
+  gatewayAuthVerifyUrl: process.env.CLAUDE_PROXY_GATEWAY_AUTH_VERIFY_URL ? new URL(process.env.CLAUDE_PROXY_GATEWAY_AUTH_VERIFY_URL) : null,
 });
 claudeProxyServer.httpServer.listen(claudeProxyPort, claudeProxyListenAddress, () => {
   console.log(`claude-proxy listens on http://${claudeProxyListenAddress}:${claudeProxyPort}, web UI at http://${claudeProxyListenAddress}:${claudeProxyPort}/_proxy/`);
