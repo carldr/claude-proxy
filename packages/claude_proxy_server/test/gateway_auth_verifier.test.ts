@@ -93,6 +93,24 @@ describe('GatewayAuthVerifier', () => {
     assert.equal(receivedVerifyRequests.length, 0);
   });
 
+  test('forwards a bare Bearer header with a valid cookie, and does not cache the refusal', async () => {
+    const gatewayAuthVerifier = createVerifier();
+    const headers = { authorization: 'Bearer', cookie: `gate_session=${verifiedGateSession}` };
+    assert.equal(await gatewayAuthVerifier.isVerified(headers), false);
+    assert.equal(await gatewayAuthVerifier.isVerified(headers), false);
+    assert.equal(receivedVerifyRequests.length, 2);
+    assert.equal(receivedVerifyRequests[0]!.headers.authorization, 'Bearer');
+    assert.equal(receivedVerifyRequests[0]!.headers.cookie, headers.cookie);
+  });
+
+  test('makes one verify call for two requests with the same bearer value', async () => {
+    const gatewayAuthVerifier = createVerifier();
+    const headers = { authorization: `Bearer ${verifiedGatewayAuthToken}` };
+    assert.equal(await gatewayAuthVerifier.isVerified(headers), true);
+    assert.equal(await gatewayAuthVerifier.isVerified({ ...headers }), true);
+    assert.equal(receivedVerifyRequests.length, 1);
+  });
+
   test('does not forward a non-Bearer authorization header, and sends the cookie of a gate_session request', async () => {
     const gatewayAuthVerifier = createVerifier();
     const cookieHeader = `gate_session=${verifiedGateSession}`;
@@ -115,7 +133,6 @@ describe('GatewayAuthVerifier', () => {
     const gatewayAuthVerifier = createVerifier();
     assert.equal(await gatewayAuthVerifier.isVerified({}), false);
     assert.equal(await gatewayAuthVerifier.isVerified({ cookie: 'theme=dark; other_session=abc' }), false);
-    assert.equal(await gatewayAuthVerifier.isVerified({ authorization: 'Bearer ' }), false);
     assert.equal(await gatewayAuthVerifier.isVerified({ authorization: 'Basic dXNlcjpwYXNz' }), false);
     assert.equal(receivedVerifyRequests.length, 0);
   });
