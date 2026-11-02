@@ -281,6 +281,12 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
       clientResponse.end(`claude-proxy needs a Gateway Auth login or Authorization: Bearer token for requests addressed to ${options.publicHostname}.`);
       return;
     }
+    // A public request reaches Anthropic only through the decrypted tunnel, so a gateway bearer token never goes to Anthropic.
+    if (clientRequest.headers.host === options.publicHostname && !requestPath.startsWith(webUiPathPrefix)) {
+      clientResponse.writeHead(404, { 'content-type': 'text/plain' });
+      clientResponse.end(`claude-proxy serves only /_proxy/ paths for requests addressed to ${options.publicHostname}.`);
+      return;
+    }
     if (clientRequest.method === 'GET' && requestPath === certificateAuthorityPath) {
       serveCertificateAuthority(clientResponse);
     } else if (requestPath.startsWith(webApiPathPrefix)) {

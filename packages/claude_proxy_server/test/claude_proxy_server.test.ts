@@ -974,6 +974,16 @@ describe('claude-proxy', () => {
       assert.equal(receivedRequests.length, 0);
     });
 
+    test('answers 404 to a verified public request outside /_proxy/, and sends nothing to Anthropic', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}), subscriptionAccountsYaml, publicHostname);
+      assert.equal(await sendWithHeaders({ host: publicHostname, ...verifiedTokenHeaders }, '/v1/models'), 404);
+      assert.equal(await sendWithHeaders({ host: publicHostname, ...verifiedTokenHeaders }, '/api/hello'), 404);
+      assert.equal(receivedRequests.length, 0);
+      const proxyPort = (claudeProxyServer.httpServer.address() as AddressInfo).port;
+      assert.equal(await sendWithHeaders({ host: `127.0.0.1:${proxyPort}` }, '/v1/models'), 200);
+      assert.equal(receivedRequests.length, 1);
+    });
+
     test('accepts a loopback Host only from a loopback connection', async () => {
       await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}), subscriptionAccountsYaml, publicHostname);
       const proxyPort = (claudeProxyServer.httpServer.address() as AddressInfo).port;
