@@ -156,7 +156,7 @@ Ruling: every install uses the manual redirect URI, so there is one login flow. 
 - Create: `Dockerfile`, `.dockerignore`, `deploy/docker-compose.yml`, `deploy/README.md`
 
 **Interfaces:**
-- Produces: image with `CLAUDE_PROXY_DIRECTORY=/data`, `CLAUDE_PROXY_LISTEN_ADDRESS=0.0.0.0`, `CLAUDE_PROXY_PORT=4100`, `USER node`, `CMD ["node", "packages/claude_proxy_server/src/main.ts"]`. The compose service `claude_proxy` sets `CLAUDE_PROXY_PUBLIC_HOSTNAME=claude-proxy.example.com`, mounts `claude-proxy-data:/data`, publishes `4100:4100`, `restart: always`, and has a healthcheck on `/_proxy/api/subscription-account-status` with `Host: claude-proxy.example.com`.
+- Produces: image with `CLAUDE_PROXY_DIRECTORY=/data`, `CLAUDE_PROXY_LISTEN_ADDRESS=0.0.0.0`, `CLAUDE_PROXY_PORT=4100`, `USER node`, `CMD ["node", "packages/claude_proxy_server/src/main.ts"]`. The compose service `claude_proxy` sets `CLAUDE_PROXY_PUBLIC_HOSTNAME=claude-proxy.example.com` and `CLAUDE_PROXY_GATEWAY_AUTH_VERIFY_URL` (Task 13; the value goes in `.env` beside the compose file), mounts `claude-proxy-data:/data`, publishes `4100:4100`, `restart: always`, and has a healthcheck on `http://127.0.0.1:4100/_proxy/api/subscription-account-status`, a loopback request from inside the container.
 
 - [ ] **Step 1: Write the files.** The build stage is `node:26-slim` with corepack's pnpm. It installs with `--frozen-lockfile` and runs `pnpm --filter claude_proxy_web_ui build`, not `pnpm build`, which also builds the macOS menu bar. The run stage installs `openssl` with `apt-get install -y --no-install-recommends`, and copies `packages/`, `scripts/` and `node_modules`. `deploy/README.md` gives the build and push commands in the other_app layout:
 
@@ -229,6 +229,35 @@ Ruling: every install uses the manual redirect URI, so there is one login flow. 
 
 - [ ] **Step 1: Check** that README covers the central service end to end: the relay, the CA, Gateway Auth, the manual login, the absolute routes and the cut-over. Check that `CLAUDE.md` covers the tunnel path and the relay. Fix any gap.
 - [ ] **Step 2: Commit.**
+
+### Task 13: Verify every public request with Gateway Auth
+
+Runs after Task 5 and before Task 6. Task 7's compose file and Task 12 use its setting.
+
+**Files:**
+- Create: `packages/claude_proxy_server/src/gateway_auth_verifier.ts`
+- Modify: `packages/claude_proxy_server/src/claude_proxy_server.ts` (request dispatch, `upgrade` handler, `isAcceptedRequest`), `packages/claude_proxy_server/src/main.ts`
+- Test: `packages/claude_proxy_server/test/gateway_auth_verifier.test.ts`, `packages/claude_proxy_server/test/claude_proxy_server.test.ts`
+
+**Interfaces:**
+- Consumes: `publicHostname`, `isAcceptedRequest` (Task 1); the tunnel `upgrade` handler (Task 2).
+- Produces: `class GatewayAuthVerifier` with `constructor(gatewayAuthVerifyUrl: URL, options: { cacheMilliseconds: number; timeoutMilliseconds: number })` and `isVerified(requestHeaders: IncomingHttpHeaders): Promise<boolean>`. `ClaudeProxyServerOptions.gatewayAuthVerifyUrl: URL | null`. Environment variable `CLAUDE_PROXY_GATEWAY_AUTH_VERIFY_URL`. Values: cache 60 000 ms, timeout 5000 ms.
+
+- [ ] **Step 1: Write the failing tests** of `GatewayAuthVerifier`, against a fake verify server on loopback:
+  - `sends the token and the cookie to the verify URL, and passes on a 200`: the fake server receives `x-gateway-auth-token` and `cookie` unchanged, and no other request header but `host`.
+  - `refuses on a 401, on a 302 and on no answer within the timeout`: each gives `false`; the no-answer case with `timeoutMilliseconds: 200` returns within 1 second.
+  - `refuses a request without a token or a gate_session cookie, without calling the verify URL`.
+  - `keeps a pass for the cache time, keyed by the token or the gate_session cookie`: two calls with the same token within the cache time make one verify request; after the cache time (`mock.timers` on `Date`), a third call makes a second request. A different token makes its own request. A refusal is not kept.
+- [ ] **Step 2: Write the failing server tests** with a server made with `publicHostname: 'claude-proxy.example.test'` and `gatewayAuthVerifyUrl` pointing at a fake verify server:
+  - `serves a public request that Gateway Auth verifies`, and `answers 401 to a public request that Gateway Auth refuses` (web API path).
+  - `answers 401 to a tunnel upgrade that Gateway Auth refuses`, and the upgrade with a verified token still gives `101`.
+  - `accepts a loopback Host only from a loopback connection`: `isAcceptedRequest` with a request whose `socket.remoteAddress` is `172.17.0.5` and `Host: 127.0.0.1:<port>` returns false.
+  - `refuses to start with a public hostname and no Gateway Auth verify URL`: `createClaudeProxyServer` throws, and the message names `CLAUDE_PROXY_GATEWAY_AUTH_VERIFY_URL`.
+  - A server without a public hostname makes no verify request (the existing tests pass unchanged).
+- [ ] **Step 3: Run** `node --test packages/claude_proxy_server/test/gateway_auth_verifier.test.ts` and the new server tests. Expected: FAIL.
+- [ ] **Step 4: Implement.** The check runs after `isAcceptedRequest` and only for the public Host. The verifier keys its cache by `sha256(token)` when the token is present, else by `sha256(gate_session)`. It never logs a token or a cookie.
+- [ ] **Step 5: Run** `pnpm test` and `pnpm typecheck`. Expected: all pass.
+- [ ] **Step 6: Update** README "Security" and `CLAUDE.md` "Request flow" (a public request needs Gateway Auth's 200, asked by claude-proxy), then commit.
 
 ### Task 12: Deployment and cut-over
 

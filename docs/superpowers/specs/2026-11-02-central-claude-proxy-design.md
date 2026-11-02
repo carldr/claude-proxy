@@ -63,6 +63,12 @@ Claude Code ──CONNECT──▶ relay (127.0.0.1:4100) ──HTTPS upgrade─
 - New setting `CLAUDE_PROXY_PUBLIC_HOSTNAME`, here `claude-proxy.example.com`. `isLocalRequest` also accepts that Host, and an Origin of `https://claude-proxy.example.com`.
 - New endpoint `GET /_proxy/tunnel` with `Upgrade: claude-proxy-tunnel`. The server answers `101` and gives the socket to `interceptedAnthropicApiServer`, the same path a `CONNECT` to `api.anthropic.com:443` takes today. The endpoint has no target parameter, so it can reach no other host.
 - The `CONNECT` listener stays for a local install. A public install does not need it.
+- The container publishes port 4100 on docker-host. The cluster's hosts, and every other container on docker-host, can connect to that port without Caddy, so Gateway Auth never sees their requests. claude-proxy therefore asks Gateway Auth itself:
+  - New setting `CLAUDE_PROXY_GATEWAY_AUTH_VERIFY_URL`: the `/verify?team_id=<id of gateway-auth-claude-proxy>` URL of the Gateway Auth function, the same URL that Caddy's `forward_auth` calls. A server with a public hostname refuses to start without it.
+  - For each request to the public hostname, claude-proxy sends that URL the request's `X-Gateway-Auth-Token` and `Cookie` headers. A 200 serves the request. Any other answer, or no answer within 5 seconds, gives 401.
+  - claude-proxy keeps a 200 for 60 seconds, keyed by the SHA-256 of the token or of the `gate_session` cookie.
+  - claude-proxy accepts a loopback Host only from a loopback connection, which is the container's own healthcheck.
+  - Gateway Auth stays the only thing that checks a token or a login. No new secret exists.
 - The log goes to standard output in the container.
 - The Resume column of the Sessions tab reads `session_log_file_path` from `~/.claude/projects` on the machine that runs the proxy. The central service has no such directory, so it shows no log file path. The copied `claude --resume` command does not need it. The design removes the log file path and keeps the command.
 
