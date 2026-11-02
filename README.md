@@ -318,11 +318,14 @@ The menu bar app reads `/_proxy/api/subscription-account-status` from the relay.
 
 ## Roy host
 
-On a Roy host, the user's dotfiles clone this repository to `~/claude-proxy` and install `systemd/claude-proxy-relay.service` as a systemd user unit. The unit runs the relay with the `node` of mise, and restarts it after 5 seconds when it stops. Write `central_url` and `gateway_auth_token` to `~/.claude-proxy-relay` first. See [Relay](#relay). Then run:
+On a Roy host, the user's dotfiles clone this repository to `~/claude-proxy` and install `systemd/claude-proxy-relay.service` as a systemd user unit. The unit runs the relay with the `node` of mise, and restarts it after 5 seconds when it stops.
 
-```sh
-systemctl --user enable --now claude-proxy-relay.service
-```
+1. Keep the relay running without a login: `sudo loginctl enable-linger <user>`.
+2. Write `central_url` and `gateway_auth_token` to `~/.claude-proxy-relay` on the host, with mode 600. See [Relay](#relay).
+3. Install and start the relay from your machine: `roy user dotfiles sync <host>`. A dotfiles repository without this step needs `systemctl --user enable --now claude-proxy-relay.service` on the host.
+4. Write `HTTPS_PROXY`, `NO_PROXY` and `NODE_EXTRA_CA_CERTS` to a file, as `NAME=value` lines. Use the values from step 6 of [Relay](#relay) and `NO_PROXY=localhost,127.0.0.1`. Give `NODE_EXTRA_CA_CERTS` an absolute path.
+5. Give the variables to the Roy sessions: `roy user env import <host> <file>`. The command restarts the sessions. Add `--no-restart-sessions` to keep them running, and the variables then reach only the next sessions.
+6. Add the same three lines to `~/roy-orchestrator/env` on the host. The Roy orchestrator reads this file, not `~/.roy/env`.
 
 On a host with several users, give each user a different port. Run `systemctl --user edit claude-proxy-relay.service` and add `Environment=CLAUDE_PROXY_RELAY_PORT=<port>` under `[Service]`. Set the same variable in the shell that runs the [zsh function](#zsh-function).
 

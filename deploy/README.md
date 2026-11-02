@@ -21,10 +21,11 @@ docker --host ssh://docker-builder push localhost:5000/claude-proxy:${commit:0:7
 ## Run the service
 
 1. Copy `docker-compose.yml` to `/root/claude-proxy` on docker-host. Make the data directory: `mkdir /root/claude-proxy/data && chown 1000:1000 /root/claude-proxy/data && chmod 700 /root/claude-proxy/data`.
-2. Make `/root/claude-proxy/.env` with these two lines. Replace `<commit>` and the verify URL.
+2. Make `/root/claude-proxy/.env` with these three lines. Replace `<commit>` and the verify URL.
 
    ```sh
    CLAUDE_PROXY_IMAGE=registry.example.com:5000/claude-proxy:<commit>
+   CLAUDE_PROXY_PUBLIC_HOSTNAME=claude-proxy.example.com
    CLAUDE_PROXY_GATEWAY_AUTH_VERIFY_URL=<Gateway Auth /verify URL with team_id>
    ```
 

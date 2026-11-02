@@ -1,5 +1,5 @@
 # Runs claude-proxy as a central service on docker-host.
-# Set CLAUDE_PROXY_IMAGE and CLAUDE_PROXY_GATEWAY_AUTH_VERIFY_URL in `.env` beside this file. See README.md.
+# Set CLAUDE_PROXY_IMAGE, CLAUDE_PROXY_PUBLIC_HOSTNAME and CLAUDE_PROXY_GATEWAY_AUTH_VERIFY_URL in `.env` beside this file. See README.md.
 services:
   claude_proxy:
     image: ${CLAUDE_PROXY_IMAGE}
@@ -7,7 +7,7 @@ services:
     ports:
       - "4100:4100"
     environment:
-      CLAUDE_PROXY_PUBLIC_HOSTNAME: claude-proxy.example.com
+      CLAUDE_PROXY_PUBLIC_HOSTNAME: ${CLAUDE_PROXY_PUBLIC_HOSTNAME}
       CLAUDE_PROXY_GATEWAY_AUTH_VERIFY_URL: ${CLAUDE_PROXY_GATEWAY_AUTH_VERIFY_URL}
     # /data is /root/claude-proxy/data on docker-host, owned by UID 1000 (node) with mode 700.
     volumes:
