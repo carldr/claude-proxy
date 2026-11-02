@@ -34,6 +34,22 @@ if [ -n "$missing_relay_files" ]; then
   exit 1
 fi
 
+for relay_file_name in central_url gateway_auth_token proxy_credential; do
+  relay_file_path="$claude_proxy_relay_directory/$relay_file_name"
+  if [ -f "$relay_file_path" ]; then
+    relay_file_mode="$(printf '%03d' "$(stat -f %Lp "$relay_file_path")")"
+    case "${relay_file_mode#?}" in
+      00) ;;
+      *)
+        echo "The relay refuses to start, because group or others can read $relay_file_path." >&2
+        echo "Run: chmod 600 $relay_file_path" >&2
+        echo "Nothing changed." >&2
+        exit 1
+        ;;
+    esac
+  fi
+done
+
 mkdir -p "$launch_agents_directory" "$claude_proxy_relay_directory"
 
 write_launch_agent() {

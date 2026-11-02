@@ -67,7 +67,7 @@ Delete `~/.claude-proxy/routes.yml` after an upgrade from an earlier version. It
 
 `pnpm install_launchd_agents` does not install the proxy as an agent. To run the proxy on one machine without a central proxy, follow these steps.
 
-1. Stop the relay agent, because the proxy and the relay both use port 4100. Run `pnpm uninstall_launchd_agents`.
+1. Stop the relay agent, because the proxy and the relay both use port 4100. Run `pnpm uninstall_launchd_agents`. It also removes the menu bar agent.
 2. Run `pnpm build`, and then `pnpm start`. The first start creates `~/.claude-proxy/subscription_accounts.yml`. Edit it. See [Configuration](#configuration).
 3. Create the certificate authority and the certificate for `api.anthropic.com`. The script refuses to replace an existing certificate authority:
 
@@ -82,7 +82,7 @@ Delete `~/.claude-proxy/routes.yml` after an upgrade from an earlier version. It
    ```
 
 4. Point Claude Code at the proxy with the local-proxy variants in [Connecting Claude Code](#connecting-claude-code).
-5. Log in to each subscription account from the web UI. See [Log in to the subscription accounts](#log-in-to-the-subscription-accounts).
+5. Log in to each subscription account from the web UI. See [Log in to the subscription accounts](#log-in-to-the-subscription-accounts). Never log in to the same subscription accounts as the central proxy: when one server refreshes a login, the other server loses it.
 
 ## Connecting Claude Code
 
