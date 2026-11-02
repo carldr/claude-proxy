@@ -10,11 +10,12 @@ This directory runs claude-proxy on docker-host, in the same layout as another a
 
 ## Build and push the image
 
-Run these commands on your machine, in a checkout where the commit is pushed to GitHub. Replace `<commit>` with the commit hash.
+Run these commands on your machine, in a checkout where the commit is pushed to GitHub. The build needs the full commit hash, because BuildKit does not resolve a short hash. The tag is the short hash.
 
 ```sh
-docker --host ssh://docker-builder build -t localhost:5000/claude-proxy:<commit> https://github.com/carldr/claude-proxy.git#<commit>
-docker --host ssh://docker-builder push localhost:5000/claude-proxy:<commit>
+commit=$(git rev-parse HEAD)
+docker --host ssh://docker-builder build -t localhost:5000/claude-proxy:${commit:0:7} https://github.com/carldr/claude-proxy.git#$commit
+docker --host ssh://docker-builder push localhost:5000/claude-proxy:${commit:0:7}
 ```
 
 ## Run the service
