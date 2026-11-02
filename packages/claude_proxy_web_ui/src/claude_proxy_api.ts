@@ -160,12 +160,25 @@ async function requestApi<ResponseType>(apiPath: string, requestInit?: RequestIn
   return responseValue as ResponseType;
 }
 
+/** Posts the pasted text of the manual code page. The server answers 204 with no body, or 400 with an error. */
+async function finishSubscriptionAccountLogin(pastedAuthorizationCode: string): Promise<void> {
+  const apiResponse = await fetch(`${apiBasePath}subscription-account-logins/finish`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ pastedAuthorizationCode }),
+  });
+  if (apiResponse.ok) return;
+  const responseValue = await apiResponse.json().catch(() => ({}));
+  throw new Error(responseValue.error ?? `HTTP ${apiResponse.status}`);
+}
+
 export const claudeProxyApi = {
   readSubscriptionAccountStatus: () => requestApi<SubscriptionAccountStatusResponse>('subscription-account-status'),
   checkSubscriptionAccountUsage: () =>
     requestApi<SubscriptionAccountUsageCheckResponse>('subscription-account-usage-check', { method: 'POST' }),
   startSubscriptionAccountLogin: (subscriptionAccountName: string) =>
     requestApi<{ authorizeUrl: string }>(`subscription-accounts/${encodeURIComponent(subscriptionAccountName)}/login`, { method: 'POST' }),
+  finishSubscriptionAccountLogin,
   listProxiedRequests: (filters: ProxiedRequestFilters, beforeId?: number) => {
     const queryParameters = buildFilterQueryParameters(filters);
     if (beforeId !== undefined) queryParameters.set('beforeId', String(beforeId));

@@ -8,7 +8,7 @@ import { claudeProxyTunnelPath, claudeProxyTunnelUpgradeToken, handleClaudeProxy
 import { parseModelPricingConfig, type ModelPricingTable } from './model_pricing_config.ts';
 import { handleProxyRequest } from './proxy_request_handler.ts';
 import { RequestDatabase } from './request_database.ts';
-import { SubscriptionAccountLoginHandler, subscriptionAccountLoginCallbackPath } from './subscription_account_login_handler.ts';
+import { SubscriptionAccountLoginHandler } from './subscription_account_login_handler.ts';
 import { SubscriptionAccountGrantRefresher, type OAuthEndpoints } from './subscription_account_oauth.ts';
 import { SubscriptionAccountRouter } from './subscription_account_router.ts';
 import { SubscriptionAccountStore } from './subscription_account_store.ts';
@@ -185,7 +185,6 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
     subscriptionAccountStore,
     readSubscriptionAccountsConfig,
     oauthEndpoints: options.oauthEndpoints,
-    readListeningPort: () => (httpServer.address() as AddressInfo).port,
     checkSubscriptionAccountUsageAfterLogin: (subscriptionAccountName) => {
       subscriptionAccountUsageMonitor.checkSubscriptionAccountUsage(subscriptionAccountName).catch((error: Error) => {
         console.error(`claude-proxy could not poll the usage of subscription account ${subscriptionAccountName} after its login: ${error.message}`);
@@ -221,8 +220,6 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
       });
     } else if (requestPath.startsWith(webUiPathPrefix)) {
       handleWebUiStaticFileRequest(clientRequest, clientResponse, options.webUiDistDirectory);
-    } else if (clientRequest.method === 'GET' && new URL(requestPath, 'http://claude-proxy').pathname === subscriptionAccountLoginCallbackPath) {
-      await subscriptionAccountLoginHandler.handleCallbackRequest(clientRequest, clientResponse);
     } else if (clientRequest.method === 'GET' && (requestPath === '/' || requestPath === '/_proxy')) {
       clientResponse.writeHead(302, { location: webUiPathPrefix });
       clientResponse.end();

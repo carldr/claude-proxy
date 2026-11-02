@@ -1,4 +1,3 @@
-import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
   exchangeSubscriptionAccountLoginCode,
   startSubscriptionAccountLogin,
@@ -7,13 +6,12 @@ import {
 } from './subscription_account_oauth.ts';
 import type { SubscriptionAccountStore } from './subscription_account_store.ts';
 import type { SubscriptionAccountsConfig } from './subscription_accounts_config.ts';
-import { webUiPathPrefix } from './web_ui_static_file_handler.ts';
 
 /**
- * The path must be `/callback`, because the OAuth client of Claude Code registers that path
- * for a redirect URI on localhost.
+ * The OAuth client of Claude Code registers this redirect URI. The page there shows the
+ * authorization code and the state as `<code>#<state>`, for the user to paste into the web UI.
  */
-export const subscriptionAccountLoginCallbackPath = '/callback';
+export const subscriptionAccountManualRedirectUri = 'https://platform.claude.com/oauth/code/callback';
 
 const pendingLoginLifetimeMilliseconds = 10 * 60_000;
 
@@ -21,12 +19,11 @@ export interface SubscriptionAccountLoginHandlerDependencies {
   subscriptionAccountStore: SubscriptionAccountStore;
   readSubscriptionAccountsConfig: () => SubscriptionAccountsConfig;
   oauthEndpoints: OAuthEndpoints;
-  readListeningPort: () => number;
   /** Starts a usage poll of the account that logged in, so its usage shows before the next 5-minute poll. */
   checkSubscriptionAccountUsageAfterLogin: (subscriptionAccountName: string) => void;
 }
 
-/** Starts logins of subscription accounts, and finishes them when the browser returns to the loopback callback. */
+/** Starts logins of subscription accounts, and finishes them with the code that the user pastes into the web UI. */
 export class SubscriptionAccountLoginHandler {
   private readonly dependencies: SubscriptionAccountLoginHandlerDependencies;
   private readonly pendingLoginsByState = new Map<string, { pendingLogin: PendingSubscriptionAccountLogin; expiresAt: number }>();
@@ -45,27 +42,24 @@ export class SubscriptionAccountLoginHandler {
     for (const [state, { expiresAt }] of this.pendingLoginsByState) {
       if (expiresAt <= now) this.pendingLoginsByState.delete(state);
     }
-    const redirectUri = `http://localhost:${this.dependencies.readListeningPort()}${subscriptionAccountLoginCallbackPath}`;
-    const { pendingLogin, authorizeUrl } = startSubscriptionAccountLogin(subscriptionAccountName, redirectUri, this.dependencies.oauthEndpoints);
+    const { pendingLogin, authorizeUrl } = startSubscriptionAccountLogin(
+      subscriptionAccountName,
+      subscriptionAccountManualRedirectUri,
+      this.dependencies.oauthEndpoints,
+    );
     this.pendingLoginsByState.set(pendingLogin.state, { pendingLogin, expiresAt: now + pendingLoginLifetimeMilliseconds });
     return { authorizeUrl };
   }
 
-  /** Answers `302` to the web UI after a stored grant, and `400` with plain text that names the cause otherwise. */
-  async handleCallbackRequest(clientRequest: IncomingMessage, clientResponse: ServerResponse): Promise<void> {
-    try {
-      await this.finishLogin(new URL(clientRequest.url ?? '/', 'http://claude-proxy').searchParams);
-    } catch (error) {
-      clientResponse.writeHead(400, { 'content-type': 'text/plain', 'cache-control': 'no-store' });
-      clientResponse.end(`Login failed: ${(error as Error).message}`);
-      return;
+  /** Takes the text that the manual code page shows, `<code>#<state>`. Throws an error that names the cause when the login cannot finish. */
+  async finishLogin(pastedAuthorizationCode: string): Promise<void> {
+    const trimmedText = pastedAuthorizationCode.trim();
+    const separatorIndex = trimmedText.lastIndexOf('#');
+    if (separatorIndex === -1) {
+      throw new Error('The pasted text has no #. Paste the whole code that the page shows, in the form <code>#<state>.');
     }
-    clientResponse.writeHead(302, { location: webUiPathPrefix });
-    clientResponse.end();
-  }
-
-  private async finishLogin(callbackParameters: URLSearchParams): Promise<void> {
-    const state = callbackParameters.get('state') ?? '';
+    const code = trimmedText.slice(0, separatorIndex);
+    const state = trimmedText.slice(separatorIndex + 1);
     const pending = this.pendingLoginsByState.get(state);
     this.pendingLoginsByState.delete(state);
     if (!pending || pending.expiresAt <= Date.now()) {
@@ -77,10 +71,7 @@ export class SubscriptionAccountLoginHandler {
     if (!isStillConfigured) {
       throw new Error(`Subscription account "${pending.pendingLogin.subscriptionAccountName}" is no longer in subscription_accounts.yml.`);
     }
-    const authorizationError = callbackParameters.get('error');
-    if (authorizationError) throw new Error(`The authorization server answered ${authorizationError}.`);
-    const code = callbackParameters.get('code');
-    if (!code) throw new Error('The callback has no code.');
+    if (!code) throw new Error('The pasted text has no code before the #.');
 
     const grant = await exchangeSubscriptionAccountLoginCode(pending.pendingLogin, code, this.dependencies.oauthEndpoints);
     const { subscriptionAccountStore } = this.dependencies;

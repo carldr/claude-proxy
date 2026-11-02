@@ -6,7 +6,7 @@ import net from 'node:net';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, test } from 'node:test';
+import { afterEach, beforeEach, describe, mock, test } from 'node:test';
 import tls from 'node:tls';
 import { createClaudeProxyServer, makeClaudeProxyFilePrivate, type ClaudeProxyServer } from '../src/claude_proxy_server.ts';
 import { parseSubscriptionAccountUsageReport } from '../src/subscription_account_usage_monitor.ts';
@@ -1328,22 +1328,25 @@ describe('claude-proxy', () => {
       return { loginResponse, loginBody: (await loginResponse.json()) as any };
     }
 
-    function callCallback(callbackQuery: string) {
-      return fetch(`${claudeProxyBaseUrl}/callback?${callbackQuery}`, { redirect: 'manual' });
+    function finishLogin(pastedAuthorizationCode: string) {
+      return fetch(`${claudeProxyBaseUrl}/_proxy/api/subscription-account-logins/finish`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ pastedAuthorizationCode }),
+      });
     }
 
-    test('logs in an account through the loopback callback', async () => {
+    test('logs in an account with the pasted code and state', async () => {
       await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
       answerLoginWithIdentity('person-account-uuid', 'person-organization-uuid', 'person@example.com');
 
       const { loginResponse, loginBody } = await startLogin('Personal');
       assert.equal(loginResponse.status, 200);
       const authorizeUrl = new URL(loginBody.authorizeUrl);
-      assert.equal(authorizeUrl.searchParams.get('redirect_uri'), `http://localhost:${new URL(claudeProxyBaseUrl).port}/callback`);
-      const callbackResponse = await callCallback(`code=the-code&state=${authorizeUrl.searchParams.get('state')}`);
+      assert.equal(authorizeUrl.searchParams.get('redirect_uri'), 'https://platform.claude.com/oauth/code/callback');
+      const finishResponse = await finishLogin(`the-code#${authorizeUrl.searchParams.get('state')}`);
 
-      assert.equal(callbackResponse.status, 302);
-      assert.equal(callbackResponse.headers.get('location'), '/_proxy/');
+      assert.equal(finishResponse.status, 204);
       const storedGrant = claudeProxyServer.subscriptionAccountStore.readGrant('Personal');
       assert.equal(storedGrant?.accessToken, 'login-access-token');
       assert.equal(storedGrant?.refreshToken, 'login-refresh-token');
@@ -1352,11 +1355,75 @@ describe('claude-proxy', () => {
       assert.equal(personalStatus.emailAddress, 'person@example.com');
     });
 
+    test('sends the manual redirect URI in the token request', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
+      answerLoginWithIdentity('person-account-uuid', 'person-organization-uuid', 'person@example.com');
+      const { loginBody } = await startLogin('Personal');
+      await finishLogin(`the-code#${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
+      const tokenRequest = receivedRequests.find((receivedRequest) => receivedRequest.upstreamName === 'token_server');
+      assert.equal(JSON.parse(tokenRequest?.body ?? '{}').redirect_uri, 'https://platform.claude.com/oauth/code/callback');
+    });
+
+    test('trims spaces and newlines around the pasted code', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
+      answerLoginWithIdentity('person-account-uuid', 'person-organization-uuid', 'person@example.com');
+      const { loginBody } = await startLogin('Personal');
+      const finishResponse = await finishLogin(`  the-code#${new URL(loginBody.authorizeUrl).searchParams.get('state')}\n`);
+      assert.equal(finishResponse.status, 204);
+      assert.equal(claudeProxyServer.subscriptionAccountStore.readGrant('Personal')?.accessToken, 'login-access-token');
+    });
+
+    test('names the missing state when the pasted code has no #', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
+      await startLogin('Personal');
+      const finishResponse = await finishLogin('the-code');
+      assert.equal(finishResponse.status, 400);
+      assert.match((await finishResponse.json()).error, /#/);
+      assert.equal(claudeProxyServer.subscriptionAccountStore.readGrant('Personal'), null);
+    });
+
+    test('rejects a pasted value with no code before the #', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
+      const { loginBody } = await startLogin('Personal');
+      const finishResponse = await finishLogin(`#${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
+      assert.equal(finishResponse.status, 400);
+      assert.match((await finishResponse.json()).error, /no code/);
+    });
+
+    test('rejects a login finished after 10 minutes', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
+      answerLoginWithIdentity('person-account-uuid', 'person-organization-uuid', 'person@example.com');
+      const { loginBody } = await startLogin('Personal');
+      mock.timers.enable({ apis: ['Date'], now: Date.now() + 11 * 60_000 });
+      try {
+        const finishResponse = await finishLogin(`the-code#${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
+        assert.equal(finishResponse.status, 400);
+        assert.match((await finishResponse.json()).error, /expired/);
+      } finally {
+        mock.timers.reset();
+      }
+      assert.equal(claudeProxyServer.subscriptionAccountStore.readGrant('Personal'), null);
+    });
+
+    test('rejects a login for an account that left subscription_accounts.yml after the login started', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
+      answerLoginWithIdentity('person-account-uuid', 'person-organization-uuid', 'person@example.com');
+      const { loginBody } = await startLogin('Personal');
+      const subscriptionAccountsYamlPath = path.join(claudeProxyDirectory, 'subscription_accounts.yml');
+      fs.writeFileSync(subscriptionAccountsYamlPath, 'subscription_accounts:\n  - { name: Work, colour: "#a1c63d" }\n');
+      const editTime = new Date(Date.now() + 60_000);
+      fs.utimesSync(subscriptionAccountsYamlPath, editTime, editTime);
+      const finishResponse = await finishLogin(`the-code#${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
+      assert.equal(finishResponse.status, 400);
+      assert.match((await finishResponse.json()).error, /no longer in subscription_accounts.yml/);
+      assert.equal(claudeProxyServer.subscriptionAccountStore.readGrant('Personal'), null);
+    });
+
     test('polls the usage of an account right after it logs in', async () => {
       await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, { seven_day: { utilization: 40, resets_at: null } }));
       answerLoginWithIdentity('person-account-uuid', 'person-organization-uuid', 'person@example.com');
       const { loginBody } = await startLogin('Personal');
-      await callCallback(`code=the-code&state=${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
+      await finishLogin(`the-code#${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
 
       for (let attempt = 0; attempt < 50 && findStatusAccount(await readApi('subscription-account-status'), 'Personal').weeklyUtilization === null; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, 10));
@@ -1371,8 +1438,8 @@ describe('claude-proxy', () => {
       storeTestGrant('Personal', 'personal-token');
       answerLoginWithIdentity('Personal-account-uuid', 'Personal-organization-uuid', 'person@example.com');
       const { loginBody } = await startLogin('Personal');
-      const callbackResponse = await callCallback(`code=the-code&state=${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
-      assert.equal(callbackResponse.status, 302);
+      const finishResponse = await finishLogin(`the-code#${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
+      assert.equal(finishResponse.status, 204);
       assert.equal(claudeProxyServer.subscriptionAccountStore.readGrant('Personal')?.accessToken, 'login-access-token');
     });
 
@@ -1389,9 +1456,9 @@ describe('claude-proxy', () => {
       });
       answerLoginWithIdentity('other-account-uuid', 'other-organization-uuid', 'other@example.com');
       const { loginBody } = await startLogin('Personal');
-      const callbackResponse = await callCallback(`code=the-code&state=${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
+      const finishResponse = await finishLogin(`the-code#${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
 
-      assert.equal(callbackResponse.status, 302);
+      assert.equal(finishResponse.status, 204);
       assert.equal(subscriptionAccountStore.readGrant('Personal')?.accountUuid, 'other-account-uuid');
       assert.deepEqual(subscriptionAccountStore.readUsageWindows('Personal').usageWindows, []);
       assert.deepEqual(subscriptionAccountStore.readActiveLimitBlocks(new Date()), []);
@@ -1404,7 +1471,7 @@ describe('claude-proxy', () => {
       subscriptionAccountStore.mergeUsageWindows('Personal', [{ usageWindowName: '7d', utilization: 0.9, resetsAt: null }], new Date().toISOString());
       answerLoginWithIdentity('Personal-account-uuid', 'Personal-organization-uuid', 'person@example.com');
       const { loginBody } = await startLogin('Personal');
-      await callCallback(`code=the-code&state=${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
+      await finishLogin(`the-code#${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
 
       assert.equal(subscriptionAccountStore.readUsageWindows('Personal').usageWindows.length, 1);
     });
@@ -1421,10 +1488,10 @@ describe('claude-proxy', () => {
           organization: { uuid: 'Work-organization-uuid' },
         });
       const { loginBody } = await startLogin('Personal');
-      const callbackResponse = await callCallback(`code=the-code&state=${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
+      const finishResponse = await finishLogin(`the-code#${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
 
-      assert.equal(callbackResponse.status, 400);
-      assert.match(await callbackResponse.text(), /already logged in as Work/);
+      assert.equal(finishResponse.status, 400);
+      assert.match((await finishResponse.json()).error, /already logged in as Work/);
       assert.equal(claudeProxyServer.subscriptionAccountStore.readGrant('Personal'), null);
       assert.equal(claudeProxyServer.subscriptionAccountStore.readGrant('Work')?.accessToken, 'work-token');
     });
@@ -1442,9 +1509,9 @@ describe('claude-proxy', () => {
       });
       answerLoginWithIdentity('OldName-account-uuid', 'OldName-organization-uuid', 'old@example.com');
       const { loginBody } = await startLogin('Personal');
-      const callbackResponse = await callCallback(`code=the-code&state=${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
+      const finishResponse = await finishLogin(`the-code#${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
 
-      assert.equal(callbackResponse.status, 302);
+      assert.equal(finishResponse.status, 204);
       assert.equal(subscriptionAccountStore.readGrant('Personal')?.accessToken, 'login-access-token');
       assert.equal(subscriptionAccountStore.readGrant('OldName'), null);
       assert.deepEqual(subscriptionAccountStore.readUsageWindows('OldName').usageWindows, []);
@@ -1454,12 +1521,12 @@ describe('claude-proxy', () => {
       );
     });
 
-    test('rejects a callback with an unknown state', async () => {
+    test('rejects a pasted code with an unknown state', async () => {
       await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
       answerLoginWithIdentity('person-account-uuid', 'person-organization-uuid', 'person@example.com');
-      const callbackResponse = await callCallback('code=the-code&state=unknown-state');
-      assert.equal(callbackResponse.status, 400);
-      assert.match(await callbackResponse.text(), /state/);
+      const finishResponse = await finishLogin('the-code#unknown-state');
+      assert.equal(finishResponse.status, 400);
+      assert.match((await finishResponse.json()).error, /state/);
       assert.equal(claudeProxyServer.subscriptionAccountStore.readGrant('Personal'), null);
       assert.equal(receivedRequests.filter((receivedRequest) => receivedRequest.upstreamName === 'token_server').length, 0);
     });
@@ -1468,18 +1535,18 @@ describe('claude-proxy', () => {
       await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
       answerLoginWithIdentity('person-account-uuid', 'person-organization-uuid', 'person@example.com');
       const { loginBody } = await startLogin('Personal');
-      const callbackQuery = `code=the-code&state=${new URL(loginBody.authorizeUrl).searchParams.get('state')}`;
-      assert.equal((await callCallback(callbackQuery)).status, 302);
-      assert.equal((await callCallback(callbackQuery)).status, 400);
+      const pastedCode = `the-code#${new URL(loginBody.authorizeUrl).searchParams.get('state')}`;
+      assert.equal((await finishLogin(pastedCode)).status, 204);
+      assert.equal((await finishLogin(pastedCode)).status, 400);
     });
 
     test('answers 400 with the token endpoint error when the code exchange fails', async () => {
       await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
       respondAsTokenServer = (_, tokenResponse) => sendJsonResponse(tokenResponse, 400, { error: 'invalid_grant' });
       const { loginBody } = await startLogin('Personal');
-      const callbackResponse = await callCallback(`code=the-code&state=${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
-      assert.equal(callbackResponse.status, 400);
-      assert.match(await callbackResponse.text(), /invalid_grant/);
+      const finishResponse = await finishLogin(`the-code#${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
+      assert.equal(finishResponse.status, 400);
+      assert.match((await finishResponse.json()).error, /invalid_grant/);
       assert.equal(claudeProxyServer.subscriptionAccountStore.readGrant('Personal'), null);
     });
 
@@ -1490,17 +1557,9 @@ describe('claude-proxy', () => {
         tokenResponse.end('not json sk-ant-oat-secret');
       };
       const { loginBody } = await startLogin('Personal');
-      const callbackResponse = await callCallback(`code=the-code&state=${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
-      assert.equal(callbackResponse.status, 400);
-      assert.doesNotMatch(await callbackResponse.text(), /sk-ant-oat-secret/);
-    });
-
-    test('rejects a callback that carries an error instead of a code', async () => {
-      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
-      const { loginBody } = await startLogin('Personal');
-      const callbackResponse = await callCallback(`error=access_denied&state=${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
-      assert.equal(callbackResponse.status, 400);
-      assert.match(await callbackResponse.text(), /access_denied/);
+      const finishResponse = await finishLogin(`the-code#${new URL(loginBody.authorizeUrl).searchParams.get('state')}`);
+      assert.equal(finishResponse.status, 400);
+      assert.doesNotMatch((await finishResponse.json()).error, /sk-ant-oat-secret/);
     });
 
     test('rejects a login for an account that is not in subscription_accounts.yml', async () => {

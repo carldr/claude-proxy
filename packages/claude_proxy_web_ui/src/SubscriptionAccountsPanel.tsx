@@ -17,6 +17,7 @@ interface SubscriptionAccountsPanelProperties {
 export function SubscriptionAccountsPanel({ accountStatus, accountStatusError, onAccountStatusChange }: SubscriptionAccountsPanelProperties) {
   const [actionErrors, setActionErrors] = useState<string[]>([]);
   const [isCheckingUsage, setIsCheckingUsage] = useState(false);
+  const [namesOfAccountsAwaitingCode, setNamesOfAccountsAwaitingCode] = useState<string[]>([]);
 
   if (!accountStatus) {
     return (
@@ -46,6 +47,7 @@ export function SubscriptionAccountsPanel({ accountStatus, accountStatusError, o
     claudeProxyApi.startSubscriptionAccountLogin(subscriptionAccountName).then(
       ({ authorizeUrl }) => {
         setActionErrors([]);
+        setNamesOfAccountsAwaitingCode((names) => (names.includes(subscriptionAccountName) ? names : [...names, subscriptionAccountName]));
         if (loginTab) loginTab.location.href = authorizeUrl;
         else window.open(authorizeUrl, '_blank');
       },
@@ -54,6 +56,20 @@ export function SubscriptionAccountsPanel({ accountStatus, accountStatusError, o
         setActionErrors([error.message]);
       },
     );
+  };
+
+  /** Sends the code that the Claude page shows, then reads the status to show the new login state. Returns whether the login finished. */
+  const finishLogin = async (subscriptionAccountName: string, pastedAuthorizationCode: string): Promise<boolean> => {
+    try {
+      await claudeProxyApi.finishSubscriptionAccountLogin(pastedAuthorizationCode);
+      setActionErrors([]);
+      setNamesOfAccountsAwaitingCode((names) => names.filter((name) => name !== subscriptionAccountName));
+      onAccountStatusChange(await claudeProxyApi.readSubscriptionAccountStatus());
+      return true;
+    } catch (error) {
+      setActionErrors([(error as Error).message]);
+      return false;
+    }
   };
 
   const errorMessages = [...accountStatus.configErrors, ...(accountStatusError ? [accountStatusError] : []), ...actionErrors];
@@ -71,6 +87,8 @@ export function SubscriptionAccountsPanel({ accountStatus, accountStatusError, o
             key={subscriptionAccount.subscriptionAccountName}
             subscriptionAccount={subscriptionAccount}
             onLogin={openLogin}
+            isAwaitingCode={namesOfAccountsAwaitingCode.includes(subscriptionAccount.subscriptionAccountName)}
+            onFinishLogin={finishLogin}
           />
         ))}
       </div>
@@ -83,10 +101,15 @@ export function SubscriptionAccountsPanel({ accountStatus, accountStatusError, o
 function SubscriptionAccountCard({
   subscriptionAccount,
   onLogin,
+  isAwaitingCode,
+  onFinishLogin,
 }: {
   subscriptionAccount: SubscriptionAccountStatus;
   onLogin: (subscriptionAccountName: string) => void;
+  isAwaitingCode: boolean;
+  onFinishLogin: (subscriptionAccountName: string, pastedAuthorizationCode: string) => Promise<boolean>;
 }) {
+  const [pastedAuthorizationCode, setPastedAuthorizationCode] = useState('');
   const isLoginRequired = subscriptionAccount.loginState === 'login_required';
   return (
     <section className="subscription-account-card" aria-label={subscriptionAccount.subscriptionAccountName}>
@@ -108,6 +131,28 @@ function SubscriptionAccountCard({
           </button>
         )}
       </div>
+      {isAwaitingCode && (
+        <form
+          className="subscription-account-actions"
+          onSubmit={(submitEvent) => {
+            submitEvent.preventDefault();
+            onFinishLogin(subscriptionAccount.subscriptionAccountName, pastedAuthorizationCode).then((isFinished) => {
+              if (isFinished) setPastedAuthorizationCode('');
+            });
+          }}
+        >
+          <input
+            type="text"
+            value={pastedAuthorizationCode}
+            onChange={(changeEvent) => setPastedAuthorizationCode(changeEvent.target.value)}
+            placeholder="Paste the code from the Claude page"
+            aria-label={`Authorization code for ${subscriptionAccount.subscriptionAccountName}`}
+          />
+          <button type="submit" disabled={pastedAuthorizationCode.trim() === ''}>
+            Finish login
+          </button>
+        </form>
+      )}
     </section>
   );
 }

@@ -165,9 +165,28 @@ export async function handleWebApiRequest(
       );
     }
 
+    if (clientRequest.method === 'POST' && apiPath === 'subscription-account-logins/finish') {
+      const { pastedAuthorizationCode } = (await readJsonRequestBody(clientRequest)) as { pastedAuthorizationCode?: unknown };
+      if (typeof pastedAuthorizationCode !== 'string') throw new Error('The request body must be JSON with a string pastedAuthorizationCode.');
+      await dependencies.subscriptionAccountLoginHandler.finishLogin(pastedAuthorizationCode);
+      clientResponse.writeHead(204, { 'cache-control': 'no-store' });
+      clientResponse.end();
+      return;
+    }
+
     return sendJson(clientResponse, 404, { error: `No API endpoint ${clientRequest.method} ${requestUrl.pathname}` });
   } catch (error) {
     return sendJson(clientResponse, 400, { error: (error as Error).message });
+  }
+}
+
+async function readJsonRequestBody(clientRequest: IncomingMessage): Promise<unknown> {
+  const bodyChunks: Buffer[] = [];
+  for await (const bodyChunk of clientRequest) bodyChunks.push(bodyChunk as Buffer);
+  try {
+    return JSON.parse(Buffer.concat(bodyChunks).toString('utf8'));
+  } catch {
+    throw new Error('The request body is not valid JSON.');
   }
 }
 

@@ -177,7 +177,11 @@ The proxy needs its own login to each account. This login gives the proxy a gran
 
 1. Open the web UI.
 2. Press **Log in** on an account.
-3. Log in to that Claude account in the browser.
+3. Log in to that Claude account in the browser. The browser then shows a code.
+4. Copy the whole code. It has the form `<code>#<state>`.
+5. Paste the code into the field under the account in the web UI, and press **Finish login**.
+
+The login must finish within 10 minutes of step 2.
 
 An account without a live grant sends Claude Code's own token unchanged. The web UI shows **Log in** again when the grant stops working.
 
