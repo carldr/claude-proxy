@@ -11,6 +11,14 @@ import tls from 'node:tls';
  */
 export const interceptedAnthropicApiConnectTarget = 'api.anthropic.com:443';
 
+/** The path of the HTTP upgrade that carries a decrypted api.anthropic.com connection, for clients that cannot send CONNECT. */
+export const claudeProxyTunnelPath = '/_proxy/tunnel';
+/** The `Upgrade` header value of the tunnel endpoint. */
+export const claudeProxyTunnelUpgradeToken = 'claude-proxy-tunnel';
+
+const connectAcceptedResponseHead = 'HTTP/1.1 200 Connection Established\r\n\r\n';
+const tunnelAcceptedResponseHead = `HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: ${claudeProxyTunnelUpgradeToken}\r\n\r\n`;
+
 export interface HttpsProxyConnectHandlerOptions {
   /** A certificate for api.anthropic.com, from `mkcert`. Claude Code trusts it through `NODE_EXTRA_CA_CERTS`. */
   anthropicApiCertificatePath: string;
@@ -33,11 +41,32 @@ export function handleHttpsProxyConnect(
   clientSocket.on('error', () => clientSocket.destroy());
   if (connectRequestHead.length > 0) clientSocket.unshift(connectRequestHead);
   const connectTarget = connectRequest.url ?? '';
-  if (connectTarget === interceptedAnthropicApiConnectTarget) interceptAnthropicApiConnection(clientSocket, options);
+  if (connectTarget === interceptedAnthropicApiConnectTarget) decryptAnthropicApiConnection(clientSocket, connectAcceptedResponseHead, options);
   else tunnelConnection(connectTarget, clientSocket);
 }
 
-function interceptAnthropicApiConnection(clientSocket: Duplex, options: HttpsProxyConnectHandlerOptions): void {
+/** Answers one upgrade request on the tunnel endpoint. The caller has checked the host, the path and the upgrade token. */
+export function handleClaudeProxyTunnelUpgrade(
+  upgradeRequestHead: Buffer,
+  clientSocket: Duplex,
+  options: HttpsProxyConnectHandlerOptions,
+): void {
+  options.trackClientSocket(clientSocket);
+  // Node removes its own error listener before it emits `upgrade`. Without this one, a reset crashes the proxy.
+  clientSocket.on('error', () => clientSocket.destroy());
+  if (upgradeRequestHead.length > 0) clientSocket.unshift(upgradeRequestHead);
+  decryptAnthropicApiConnection(clientSocket, tunnelAcceptedResponseHead, options);
+}
+
+/**
+ * Writes `acceptedResponseHead` to the client, then decrypts the connection as api.anthropic.com.
+ * The `CONNECT` path and the tunnel endpoint share it.
+ */
+export function decryptAnthropicApiConnection(
+  clientSocket: Duplex,
+  acceptedResponseHead: string,
+  options: HttpsProxyConnectHandlerOptions,
+): void {
   let secureContext: tls.SecureContext;
   try {
     secureContext = tls.createSecureContext({
@@ -52,7 +81,7 @@ function interceptAnthropicApiConnection(clientSocket: Duplex, options: HttpsPro
     clientSocket.end(`HTTP/1.1 502 Bad Gateway\r\ncontent-type: text/plain\r\nconnection: close\r\n\r\n${errorMessage}\n`);
     return;
   }
-  clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+  clientSocket.write(acceptedResponseHead);
   const decryptedSocket = new tls.TLSSocket(clientSocket, { isServer: true, secureContext, ALPNProtocols: ['http/1.1'] });
   options.interceptedAnthropicApiServer.emit('connection', decryptedSocket);
 }

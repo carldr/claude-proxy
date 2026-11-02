@@ -869,6 +869,28 @@ describe('claude-proxy', () => {
     assert.equal(receivedRequests.length, 0);
   });
 
+  function createAnthropicApiCertificate() {
+    execFileSync('openssl', [
+      'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-days', '1',
+      '-subj', '/CN=api.anthropic.com', '-addext', 'subjectAltName=DNS:api.anthropic.com',
+      '-keyout', path.join(claudeProxyDirectory, 'api.anthropic.com-key.pem'),
+      '-out', path.join(claudeProxyDirectory, 'api.anthropic.com.pem'),
+    ], { stdio: 'ignore' });
+    return fs.readFileSync(path.join(claudeProxyDirectory, 'api.anthropic.com.pem'));
+  }
+
+  function sendHttpRequestThroughSocket(requestOptions: http.RequestOptions, connectionSocket: net.Socket, requestBody: string) {
+    return new Promise<{ statusCode: number; headers: IncomingHttpHeaders; body: string }>((resolve, reject) => {
+      const clientRequest = http.request({ ...requestOptions, createConnection: () => connectionSocket }, async (clientResponse) => {
+        const bodyChunks: Buffer[] = [];
+        for await (const bodyChunk of clientResponse) bodyChunks.push(bodyChunk as Buffer);
+        resolve({ statusCode: clientResponse.statusCode ?? 0, headers: clientResponse.headers, body: Buffer.concat(bodyChunks).toString('utf8') });
+      });
+      clientRequest.on('error', reject);
+      clientRequest.end(requestBody);
+    });
+  }
+
   describe('with a public hostname', () => {
     const publicHostname = 'claude-proxy.example.test';
 
@@ -939,16 +961,6 @@ describe('claude-proxy', () => {
   });
 
   describe('as an HTTPS_PROXY', () => {
-    function createAnthropicApiCertificate() {
-      execFileSync('openssl', [
-        'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-days', '1',
-        '-subj', '/CN=api.anthropic.com', '-addext', 'subjectAltName=DNS:api.anthropic.com',
-        '-keyout', path.join(claudeProxyDirectory, 'api.anthropic.com-key.pem'),
-        '-out', path.join(claudeProxyDirectory, 'api.anthropic.com.pem'),
-      ], { stdio: 'ignore' });
-      return fs.readFileSync(path.join(claudeProxyDirectory, 'api.anthropic.com.pem'));
-    }
-
     /** Sends CONNECT to the proxy and resolves with the response status and, on 200, the tunnel socket. */
     function openConnectTunnel(connectTarget: string) {
       return new Promise<{ statusCode: number; tunnelSocket: net.Socket }>((resolve, reject) => {
@@ -958,18 +970,6 @@ describe('claude-proxy', () => {
           .on('connect', (connectResponse, tunnelSocket) => resolve({ statusCode: connectResponse.statusCode ?? 0, tunnelSocket }))
           .on('error', reject)
           .end();
-      });
-    }
-
-    function sendHttpRequestThroughSocket(requestOptions: http.RequestOptions, connectionSocket: net.Socket, requestBody: string) {
-      return new Promise<{ statusCode: number; headers: IncomingHttpHeaders; body: string }>((resolve, reject) => {
-        const clientRequest = http.request({ ...requestOptions, createConnection: () => connectionSocket }, async (clientResponse) => {
-          const bodyChunks: Buffer[] = [];
-          for await (const bodyChunk of clientResponse) bodyChunks.push(bodyChunk as Buffer);
-          resolve({ statusCode: clientResponse.statusCode ?? 0, headers: clientResponse.headers, body: Buffer.concat(bodyChunks).toString('utf8') });
-        });
-        clientRequest.on('error', reject);
-        clientRequest.end(requestBody);
       });
     }
 
@@ -1049,6 +1049,71 @@ describe('claude-proxy', () => {
       assert.equal(receivedRequests.length, 0);
     });
   });
+  describe('as a tunnel endpoint', () => {
+    const publicHostname = 'claude-proxy.example.test';
+
+    /** Sends an upgrade request. Resolves with the status and, on 101, the upgraded socket. */
+    function sendTunnelUpgrade(requestPath: string, upgradeToken: string, requestHost: string) {
+      return new Promise<{ statusCode: number; headers: IncomingHttpHeaders; tunnelSocket: net.Socket | null }>((resolve, reject) => {
+        const proxyUrl = new URL(claudeProxyBaseUrl);
+        http
+          .request({
+            host: proxyUrl.hostname,
+            port: proxyUrl.port,
+            path: requestPath,
+            headers: { host: requestHost, connection: 'Upgrade', upgrade: upgradeToken },
+          })
+          .on('upgrade', (upgradeResponse, tunnelSocket) =>
+            resolve({ statusCode: upgradeResponse.statusCode ?? 0, headers: upgradeResponse.headers, tunnelSocket }),
+          )
+          .on('response', (plainResponse) => {
+            plainResponse.resume();
+            resolve({ statusCode: plainResponse.statusCode ?? 0, headers: plainResponse.headers, tunnelSocket: null });
+          })
+          .on('error', reject)
+          .end();
+      });
+    }
+
+    test('decrypts an upgraded tunnel and records the request', async () => {
+      await startProxy((_, upstreamResponse) => sendStreamingMessage(upstreamResponse, 'Hello from the tunnel'), subscriptionAccountsYaml, publicHostname);
+      storeBothTestGrants();
+      const anthropicApiCertificate = createAnthropicApiCertificate();
+      const { statusCode, headers, tunnelSocket } = await sendTunnelUpgrade('/_proxy/tunnel', 'claude-proxy-tunnel', publicHostname);
+      assert.equal(statusCode, 101);
+      assert.equal(headers.upgrade, 'claude-proxy-tunnel');
+      const decryptedSocket = tls.connect({ socket: tunnelSocket!, servername: 'api.anthropic.com', ca: anthropicApiCertificate });
+      const proxiedResponse = await sendHttpRequestThroughSocket(
+        {
+          method: 'POST',
+          path: '/v1/messages?beta=true',
+          headers: { host: 'api.anthropic.com', authorization: 'Bearer sk-ant-oat-test', 'content-type': 'application/json' },
+        },
+        decryptedSocket,
+        JSON.stringify(claudeCodeRequestBody),
+      );
+      assert.equal(proxiedResponse.statusCode, 200);
+      assert.equal(receivedRequests.length, 1);
+      assert.equal((await readApi('proxied-requests')).length, 1);
+    });
+
+    test('refuses an upgrade to another protocol or path', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}), subscriptionAccountsYaml, publicHostname);
+      assert.equal((await sendTunnelUpgrade('/_proxy/tunnel', 'websocket', publicHostname)).statusCode, 400);
+      assert.equal((await sendTunnelUpgrade('/_proxy/other', 'claude-proxy-tunnel', publicHostname)).statusCode, 404);
+    });
+
+    test('refuses an upgrade addressed to another host name', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}), subscriptionAccountsYaml, publicHostname);
+      assert.equal((await sendTunnelUpgrade('/_proxy/tunnel', 'claude-proxy-tunnel', 'other.example.test')).statusCode, 403);
+    });
+
+    test('answers 502 to an upgrade while the certificate is missing', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}), subscriptionAccountsYaml, publicHostname);
+      assert.equal((await sendTunnelUpgrade('/_proxy/tunnel', 'claude-proxy-tunnel', publicHostname)).statusCode, 502);
+    });
+  });
+
   describe('subscription account status', () => {
     const usageResetsAt = '2026-11-01T00:00:00.000Z';
 

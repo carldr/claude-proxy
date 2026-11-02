@@ -40,6 +40,8 @@ Claude Code reaches the proxy as its `HTTPS_PROXY`. `https_proxy_connect_handler
 - For `api.anthropic.com:443`, it decrypts the connection with the mkcert certificate in `~/.claude-proxy/api.anthropic.com.pem`. It gives the decrypted connection to `interceptedAnthropicApiServer`, which sends every path to `proxy_request_handler.ts`. If the certificate is missing, it answers 502.
 - For any other host, it opens a TCP tunnel and does not record it.
 
+A client that cannot send CONNECT can use the tunnel endpoint. It sends `GET /_proxy/tunnel` with `Connection: Upgrade` and `Upgrade: claude-proxy-tunnel`. The `upgrade` handler in `claude_proxy_server.ts` checks the Host with `isAcceptedRequest` (403), the path (404) and the upgrade token (400), in that order. It then answers 101 and decrypts the connection like a CONNECT tunnel, through `decryptAnthropicApiConnection`. It works with or without `publicHostname`.
+
 Do not change the setup back to `ANTHROPIC_BASE_URL`. Claude Code turns off Remote Control when `ANTHROPIC_BASE_URL` is not `api.anthropic.com`. The loopback listener still accepts `ANTHROPIC_BASE_URL` requests, as follows.
 
 `claude_proxy_server.ts` checks every request on the loopback listener with `isAcceptedRequest`. The Host must be `127.0.0.1` or `localhost` on the proxy port, and the Origin must be absent or the proxy's own. When `CLAUDE_PROXY_PUBLIC_HOSTNAME` sets `publicHostname`, the Host can also be that name without a port, with the Origin absent or `https://<publicHostname>`, and the `connect` handler answers every CONNECT with 405. `CLAUDE_PROXY_LISTEN_ADDRESS` sets the listen address (default `127.0.0.1`). It then sends the request to one of three handlers:

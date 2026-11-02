@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import type { Duplex } from 'node:stream';
-import { handleHttpsProxyConnect } from './https_proxy_connect_handler.ts';
+import { claudeProxyTunnelPath, claudeProxyTunnelUpgradeToken, handleClaudeProxyTunnelUpgrade, handleHttpsProxyConnect } from './https_proxy_connect_handler.ts';
 import { parseModelPricingConfig, type ModelPricingTable } from './model_pricing_config.ts';
 import { handleProxyRequest } from './proxy_request_handler.ts';
 import { RequestDatabase } from './request_database.ts';
@@ -258,6 +258,10 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
   });
 
   const connectClientSockets = new Set<Duplex>();
+  const trackConnectClientSocket = (trackedSocket: Duplex) => {
+    connectClientSockets.add(trackedSocket);
+    trackedSocket.on('close', () => connectClientSockets.delete(trackedSocket));
+  };
   httpServer.on('connect', (connectRequest: IncomingMessage, clientSocket: Duplex, connectRequestHead: Buffer) => {
     if (options.publicHostname !== null) {
       clientSocket.end('HTTP/1.1 405 Method Not Allowed\r\nconnection: close\r\ncontent-length: 0\r\n\r\n');
@@ -267,11 +271,27 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
       anthropicApiCertificatePath: path.join(options.claudeProxyDirectory, 'api.anthropic.com.pem'),
       anthropicApiCertificateKeyPath: path.join(options.claudeProxyDirectory, 'api.anthropic.com-key.pem'),
       interceptedAnthropicApiServer,
-      trackClientSocket: (trackedSocket) => {
-        connectClientSockets.add(trackedSocket);
-        trackedSocket.on('close', () => connectClientSockets.delete(trackedSocket));
-      },
+      trackClientSocket: trackConnectClientSocket,
     });
+  });
+
+  httpServer.on('upgrade', (upgradeRequest: IncomingMessage, clientSocket: Duplex, upgradeRequestHead: Buffer) => {
+    const refuseUpgrade = (statusLine: string, message: string) =>
+      clientSocket.end(`HTTP/1.1 ${statusLine}\r\ncontent-type: text/plain\r\nconnection: close\r\n\r\n${message}\n`);
+    if (!isAcceptedRequest(upgradeRequest, httpServer, options.publicHostname)) {
+      refuseUpgrade('403 Forbidden', 'claude-proxy does not accept requests addressed to this host name.');
+    } else if (new URL(upgradeRequest.url ?? '/', 'http://claude-proxy').pathname !== claudeProxyTunnelPath) {
+      refuseUpgrade('404 Not Found', `claude-proxy upgrades only ${claudeProxyTunnelPath}.`);
+    } else if (upgradeRequest.headers.upgrade?.toLowerCase() !== claudeProxyTunnelUpgradeToken) {
+      refuseUpgrade('400 Bad Request', `claude-proxy upgrades only to ${claudeProxyTunnelUpgradeToken}.`);
+    } else {
+      handleClaudeProxyTunnelUpgrade(upgradeRequestHead, clientSocket, {
+        anthropicApiCertificatePath: path.join(options.claudeProxyDirectory, 'api.anthropic.com.pem'),
+        anthropicApiCertificateKeyPath: path.join(options.claudeProxyDirectory, 'api.anthropic.com-key.pem'),
+        interceptedAnthropicApiServer,
+        trackClientSocket: trackConnectClientSocket,
+      });
+    }
   });
 
   return {
