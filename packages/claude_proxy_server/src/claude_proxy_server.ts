@@ -264,6 +264,8 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
   };
   httpServer.on('connect', (connectRequest: IncomingMessage, clientSocket: Duplex, connectRequestHead: Buffer) => {
     if (options.publicHostname !== null) {
+      // Node removes its own error listener before it emits `connect`. Without this one, a reset crashes the proxy.
+      clientSocket.on('error', () => clientSocket.destroy());
       clientSocket.end('HTTP/1.1 405 Method Not Allowed\r\nconnection: close\r\ncontent-length: 0\r\n\r\n');
       return;
     }
@@ -276,11 +278,13 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
   });
 
   httpServer.on('upgrade', (upgradeRequest: IncomingMessage, clientSocket: Duplex, upgradeRequestHead: Buffer) => {
+    // Node removes its own error listener before it emits `upgrade`. Without this one, a reset crashes the proxy.
+    clientSocket.on('error', () => clientSocket.destroy());
     const refuseUpgrade = (statusLine: string, message: string) =>
       clientSocket.end(`HTTP/1.1 ${statusLine}\r\ncontent-type: text/plain\r\nconnection: close\r\n\r\n${message}\n`);
     if (!isAcceptedRequest(upgradeRequest, httpServer, options.publicHostname)) {
       refuseUpgrade('403 Forbidden', 'claude-proxy does not accept requests addressed to this host name.');
-    } else if (new URL(upgradeRequest.url ?? '/', 'http://claude-proxy').pathname !== claudeProxyTunnelPath) {
+    } else if ((upgradeRequest.url ?? '').split('?')[0] !== claudeProxyTunnelPath) {
       refuseUpgrade('404 Not Found', `claude-proxy upgrades only ${claudeProxyTunnelPath}.`);
     } else if (upgradeRequest.headers.upgrade?.toLowerCase() !== claudeProxyTunnelUpgradeToken) {
       refuseUpgrade('400 Bad Request', `claude-proxy upgrades only to ${claudeProxyTunnelUpgradeToken}.`);

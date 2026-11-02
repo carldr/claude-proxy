@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import http, { type IncomingHttpHeaders, type ServerResponse } from 'node:http';
-import type net from 'node:net';
+import net from 'node:net';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -1106,6 +1106,62 @@ describe('claude-proxy', () => {
     test('refuses an upgrade addressed to another host name', async () => {
       await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}), subscriptionAccountsYaml, publicHostname);
       assert.equal((await sendTunnelUpgrade('/_proxy/tunnel', 'claude-proxy-tunnel', 'other.example.test')).statusCode, 403);
+    });
+
+    /** Sends raw request text and resolves with the response text, or with the socket when `resetAtOnce` is set. */
+    function sendRawRequest(requestText: string) {
+      return new Promise<string>((resolve, reject) => {
+        const proxyUrl = new URL(claudeProxyBaseUrl);
+        const rawSocket = net.connect(Number(proxyUrl.port), proxyUrl.hostname, () => rawSocket.write(requestText));
+        const responseChunks: Buffer[] = [];
+        rawSocket.on('data', (responseChunk) => responseChunks.push(responseChunk));
+        rawSocket.on('close', () => resolve(Buffer.concat(responseChunks).toString('utf8')));
+        rawSocket.on('error', reject);
+      });
+    }
+
+    function sendRawRequestAndReset(requestText: string) {
+      return new Promise<void>((resolve, reject) => {
+        const proxyUrl = new URL(claudeProxyBaseUrl);
+        const rawSocket = net.connect(Number(proxyUrl.port), proxyUrl.hostname, () => {
+          rawSocket.write(requestText, () => {
+            rawSocket.resetAndDestroy();
+            resolve();
+          });
+        });
+        rawSocket.on('error', reject);
+      });
+    }
+
+    async function assertServerStillAnswers() {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal((await fetch(`${claudeProxyBaseUrl}/_proxy/api/subscription-account-status`)).status, 200);
+    }
+
+    test('answers 404 to an upgrade whose request target is //, and keeps running', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}), subscriptionAccountsYaml, publicHostname);
+      const responseText = await sendRawRequest(
+        `GET // HTTP/1.1\r\nHost: ${publicHostname}\r\nConnection: Upgrade\r\nUpgrade: claude-proxy-tunnel\r\n\r\n`,
+      );
+      assert.match(responseText, /^HTTP\/1\.1 404 /);
+      await assertServerStillAnswers();
+    });
+
+    test('keeps running when a client resets its socket during a refused upgrade', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}), subscriptionAccountsYaml, publicHostname);
+      await sendRawRequestAndReset(
+        `GET /_proxy/tunnel HTTP/1.1\r\nHost: other.example.test\r\nConnection: Upgrade\r\nUpgrade: claude-proxy-tunnel\r\n\r\n`,
+      );
+      await sendRawRequestAndReset(
+        `GET /_proxy/other HTTP/1.1\r\nHost: ${publicHostname}\r\nConnection: Upgrade\r\nUpgrade: claude-proxy-tunnel\r\n\r\n`,
+      );
+      await assertServerStillAnswers();
+    });
+
+    test('keeps running when a client resets its socket during a refused CONNECT', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}), subscriptionAccountsYaml, publicHostname);
+      await sendRawRequestAndReset(`CONNECT api.anthropic.com:443 HTTP/1.1\r\nHost: api.anthropic.com:443\r\n\r\n`);
+      await assertServerStillAnswers();
     });
 
     test('answers 502 to an upgrade while the certificate is missing', async () => {
