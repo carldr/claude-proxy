@@ -45,6 +45,21 @@ docker compose exec claude_proxy sh scripts/create_certificate_authority.sh /dat
 
 Each machine that runs Claude Code trusts `/data/certificate_authority.pem`, or downloads it from `/_proxy/certificate_authority.pem`.
 
+## Add the Moss proxy
+
+Run these commands once. They send `claude-proxy.example.com` to port 4100 on docker-host, behind Gateway Auth. Replace the team ID with the ID of the team `gateway-auth-claude-proxy`.
+
+```sh
+moss proxy add --domain claude-proxy.example.com --vm-name docker-host --target-port 4100
+moss proxy set-gateway-auth-team-id --domain claude-proxy.example.com --gateway-auth-team-id <team ID>
+```
+
+Make a Gateway Auth token for each machine in your gateway-auth-repository checkout. The command prints the token once.
+
+```sh
+pnpm --silent --filter gateway-auth tokens add gateway-auth-claude-proxy <machine name>
+```
+
 ## Update the service
 
 1. Build and push the new commit.

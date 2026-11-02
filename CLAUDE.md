@@ -16,7 +16,7 @@ claude-proxy is a proxy for Claude Code. It runs locally on `127.0.0.1:4100`, or
 | `pnpm dev:server` / `pnpm dev:web_ui` | Runs the proxy with `--watch`, or the Vite dev server with `/_proxy/api` sent to port 4100. |
 | `launchctl kickstart -k gui/$(id -u)/local.claude-proxy.relay` | Restarts the installed relay after a relay change.  |
 
-To test against the real API without touching the installed proxy or `~/.claude-proxy`, start a second instance and send Claude Code through it:
+To test against the real API without touching the installed relay or `~/.claude-proxy`, start a second instance and send Claude Code through it:
 
 ```sh
 CLAUDE_PROXY_DIRECTORY=<scratch dir> CLAUDE_PROXY_PORT=4199 node packages/claude_proxy_server/src/main.ts &

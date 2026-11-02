@@ -42,7 +42,7 @@ These steps install the relay on a Mac. The relay connects Claude Code to a cent
    pnpm build
    ```
 
-3. Write the central proxy's URL to `~/.claude-proxy-relay/central_url` and your Gateway Auth token to `~/.claude-proxy-relay/gateway_auth_token`, and make both private. See [Relay](#relay).
+3. Write the central proxy's URL to `~/.claude-proxy-relay/central_url` and your Gateway Auth token to `~/.claude-proxy-relay/gateway_auth_token`, and make both private. See [Relay](#relay) for the steps and for how to make a token.
 4. Install the launchd agents. They start the relay and the menu bar app now and at each login:
 
    ```sh
@@ -198,7 +198,7 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:4100
 
 ## Configuration
 
-All configuration is in `~/.claude-proxy/`. The proxy reads each file again when the file changes. At start, the proxy makes the directory and `requests.sqlite` readable by you only. It does not start when another user owns them, because `requests.sqlite` holds the refresh tokens.
+All configuration is in `~/.claude-proxy/`. A central service keeps it in `/data`, which `CLAUDE_PROXY_DIRECTORY` sets. The proxy reads each file again when the file changes. At start, the proxy makes the directory and `requests.sqlite` readable by you only. It does not start when another user owns them, because `requests.sqlite` holds the refresh tokens.
 
 | File | Contents |
 | --- | --- |
@@ -207,7 +207,7 @@ All configuration is in `~/.claude-proxy/`. The proxy reads each file again when
 | `certificate_authority.pem`, `certificate_authority-key.pem` | The certificate authority that `scripts/create_certificate_authority.sh` makes, and its key. |
 | `api.anthropic.com.pem`, `api.anthropic.com-key.pem` | The certificate and key that the proxy uses to decrypt `api.anthropic.com` traffic. The certificate authority signs the certificate. |
 | `requests.sqlite` | The recorded requests, the grants of the subscription accounts, their last known usage and their blocks. |
-| `local.claude-proxy.server.log` | The proxy log. |
+| `local.claude-proxy.server.log` | The log of a local proxy that runs as the earlier launchd agent. The relay log is `~/.claude-proxy-relay/local.claude-proxy.relay.log`. The central container logs to standard output: run `docker compose logs`. |
 
 Example `subscription_accounts.yml`:
 
@@ -280,14 +280,14 @@ Open `https://<public hostname>/_proxy/` for the web UI. The subscription accoun
 
 ### Cut over from a local proxy
 
-Never run two servers with the same grants. A refresh revokes the previous access token of the grant, so two servers that refresh one grant log each other out. Follow these steps in order.
+Never run two servers with the same grants. A refresh revokes the previous access token of the grant, so two servers that refresh one grant log each other out. Keep the central container stopped from the first copy of the files until the local server is stopped. Follow these steps in order.
 
-1. Deploy the central service with an empty volume, and open `https://<public hostname>/_proxy/` through Gateway Auth.
-2. Copy `requests.sqlite`, `subscription_accounts.yml` and `pricing.yml` from `~/.claude-proxy` to the volume with rsync. The local proxy keeps running.
+1. Deploy the central service with an empty volume, as `deploy/README.md` describes. Make the certificate authority, and open `https://<public hostname>/_proxy/` through Gateway Auth. Then stop the container: `docker compose stop`.
+2. Copy `requests.sqlite`, `subscription_accounts.yml` and `pricing.yml` from `~/.claude-proxy` into the directory of the `claude-proxy-data` volume with rsync. The local proxy keeps running, and the container stays stopped.
 3. Stop the local proxy: `launchctl bootout gui/$(id -u)/local.claude-proxy.server`.
-4. Run rsync again. It copies only the changes since step 2.
-5. Change each `project_path_pattern` to an absolute path.
-6. Start the central service. It now holds the grants. Never start the local proxy again.
+4. Run rsync again. It copies only the changes since step 2. Then run `chown 1000:1000` and `chmod 600` on the copied files, because the container runs as the user `node` and the server refuses files that another user owns.
+5. Change each `project_path_pattern` to an absolute path in the copy of `subscription_accounts.yml` on the volume.
+6. Start the container: `docker compose start`. It now holds the grants. Never start the local proxy again.
 7. Install the relay on the machine, and check one Claude Code session in the web UI.
 8. Install the relay on every other machine.
 9. Delete `~/.claude-proxy/api.anthropic.com*.pem` on the machine that ran the local proxy, because the relay now uses the central certificate.
@@ -300,7 +300,7 @@ The relay connects Claude Code on one machine to a central claude-proxy. It list
 
 1. Make the relay directory, `~/.claude-proxy-relay`. `CLAUDE_PROXY_RELAY_DIRECTORY` changes it.
 2. Write the central proxy's URL, such as `https://claude-proxy.example.com`, to `central_url` in that directory.
-3. Write your Gateway Auth token to `gateway_auth_token` in that directory.
+3. Make a token for this machine, and write it to `gateway_auth_token` in that directory. In your gateway-auth-repository checkout, run `pnpm --silent --filter gateway-auth tokens add gateway-auth-claude-proxy <machine name>`. The command prints the token once. `list` and `remove` manage the tokens.
 4. Make both files private: `chmod 600 ~/.claude-proxy-relay/central_url ~/.claude-proxy-relay/gateway_auth_token`.
 5. Start the relay with `pnpm start:relay`. `CLAUDE_PROXY_RELAY_PORT` changes the port. On a machine with several users, give each user's relay a different port.
 6. Set `HTTPS_PROXY=http://relay:<credential>@127.0.0.1:4100` and `NODE_EXTRA_CA_CERTS=~/.claude-proxy-relay/certificate_authority.pem` for Claude Code. `<credential>` is the contents of `~/.claude-proxy-relay/proxy_credential`. The [zsh function](#zsh-function) does this for you.
