@@ -17,6 +17,7 @@ try {
 const claudeProxyRelay = createClaudeProxyRelay({
   centralUrl: claudeProxyRelayConfiguration.centralUrl,
   gatewayAuthToken: claudeProxyRelayConfiguration.gatewayAuthToken,
+  relayProxyCredential: claudeProxyRelayConfiguration.relayProxyCredential,
   relayDirectory: claudeProxyRelayDirectory,
   anthropicApiHost: 'api.anthropic.com',
   anthropicApiPort: 443,

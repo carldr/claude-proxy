@@ -24,6 +24,9 @@ final class SubscriptionAccountStatusModel: ObservableObject {
     static let refreshIntervalSeconds: TimeInterval = 60
     /// At login the app can start before the proxy listens, so a failed read is retried sooner than the normal refresh.
     static let retryAfterErrorSeconds: UInt64 = 5
+    /// The relay writes this file and needs its credential with the user name `relay`. The local proxy has no such file.
+    static let relayProxyCredentialUrl = FileManager.default.homeDirectoryForCurrentUser
+        .appending(path: ".claude-proxy-relay/proxy_credential")
 
     @Published private(set) var subscriptionAccounts: [SubscriptionAccountStatus]?
     @Published private(set) var loadError: String?
@@ -42,7 +45,7 @@ final class SubscriptionAccountStatusModel: ObservableObject {
         Task {
             do {
                 let statusUrl = Self.claudeProxyBaseUrl.appending(path: "_proxy/api/subscription-account-status")
-                let (responseData, _) = try await urlSession.data(from: statusUrl)
+                let (responseData, _) = try await urlSession.data(for: makeStatusRequest(statusUrl: statusUrl))
                 subscriptionAccounts = try JSONDecoder().decode(SubscriptionAccountStatusResponse.self, from: responseData)
                     .subscriptionAccounts
                 loadError = nil
@@ -52,6 +55,18 @@ final class SubscriptionAccountStatusModel: ObservableObject {
                 scheduleRetry()
             }
         }
+    }
+
+    /// Reads the relay's proxy credential at each poll, so a new relay works without a restart of the app.
+    /// Without the file, the request has no `Authorization`, because the local proxy needs none.
+    private func makeStatusRequest(statusUrl: URL) -> URLRequest {
+        var statusRequest = URLRequest(url: statusUrl)
+        if let relayProxyCredential = try? String(contentsOf: Self.relayProxyCredentialUrl, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines), !relayProxyCredential.isEmpty {
+            let basicCredentials = Data("relay:\(relayProxyCredential)".utf8).base64EncodedString()
+            statusRequest.setValue("Basic \(basicCredentials)", forHTTPHeaderField: "Authorization")
+        }
+        return statusRequest
     }
 
     private func scheduleRetry() {

@@ -94,16 +94,32 @@ Add this function to `~/.zshrc`:
 ```zsh
 #  Sends Claude Code through claude-proxy when the proxy answers on port 4100.
 #  claude-proxy is the HTTPS_PROXY, so Claude Code keeps api.anthropic.com as
-#  its API host, and Remote Control stays on.  The check runs at each launch, so a
-#  stopped proxy never leaves claude pointing at a dead address.  An
-#  HTTPS_PROXY or ANTHROPIC_BASE_URL that is already set wins.
+#  its API host, and Remote Control stays on.  When the relay's proxy_credential
+#  file exists, the function uses the relay and sends the credential, with the
+#  user name relay.  The check runs at each launch, so a stopped proxy never
+#  leaves claude pointing at a dead address.  An HTTPS_PROXY or
+#  ANTHROPIC_BASE_URL that is already set wins.
 function claude() {
-	local claude_proxy_url="http://127.0.0.1:4100"
+	local relay_proxy_credential_file="$HOME/.claude-proxy-relay/proxy_credential"
+	local claude_proxy_address="127.0.0.1:4100"
+	local claude_proxy_url="http://$claude_proxy_address"
+	local certificate_authority_file="$HOME/.claude-proxy/certificate_authority.pem"
+	local curl_configuration=""
+
+	if [[ -r "$relay_proxy_credential_file" ]]; then
+		local relay_proxy_credential="$(<"$relay_proxy_credential_file")"
+		claude_proxy_address="127.0.0.1:${CLAUDE_PROXY_RELAY_PORT:-4100}"
+		claude_proxy_url="http://relay:$relay_proxy_credential@$claude_proxy_address"
+		certificate_authority_file="$HOME/.claude-proxy-relay/certificate_authority.pem"
+		#  curl reads the credential from its standard input, because other users can see its arguments.
+		curl_configuration="user = \"relay:$relay_proxy_credential\""
+	fi
 
 	if [[ -z "$HTTPS_PROXY$ANTHROPIC_BASE_URL" ]] &&
-		curl --silent --fail --max-time 1 --output /dev/null "$claude_proxy_url/_proxy/api/subscription-account-status"
+		print -r -- "$curl_configuration" |
+			curl --config - --silent --fail --max-time 1 --output /dev/null "http://$claude_proxy_address/_proxy/api/subscription-account-status"
 	then
-		HTTPS_PROXY="$claude_proxy_url" NO_PROXY="localhost,127.0.0.1" NODE_EXTRA_CA_CERTS="$HOME/.claude-proxy/certificate_authority.pem" \
+		HTTPS_PROXY="$claude_proxy_url" NO_PROXY="localhost,127.0.0.1" NODE_EXTRA_CA_CERTS="$certificate_authority_file" \
 			command claude "$@"
 	else
 		command claude "$@"
@@ -121,6 +137,18 @@ Add these keys to the `env` object. Replace `/Users/you` with your home director
     "HTTPS_PROXY": "http://127.0.0.1:4100",
     "NO_PROXY": "localhost,127.0.0.1",
     "NODE_EXTRA_CA_CERTS": "/Users/you/.claude-proxy/certificate_authority.pem"
+  }
+}
+```
+
+With the relay, use the credential URL and the relay's certificate authority. Replace `<credential>` with the contents of `~/.claude-proxy-relay/proxy_credential`:
+
+```json
+{
+  "env": {
+    "HTTPS_PROXY": "http://relay:<credential>@127.0.0.1:4100",
+    "NO_PROXY": "localhost,127.0.0.1",
+    "NODE_EXTRA_CA_CERTS": "/Users/you/.claude-proxy-relay/certificate_authority.pem"
   }
 }
 ```
@@ -205,7 +233,7 @@ Open `http://127.0.0.1:4100/_proxy/`.
 
 ## Menu bar
 
-The menu bar shows one pie per subscription account, in file order. Each pie has the colour of its account and shows the usage of its weekly window. A pie turns red when the proxy tries the account last after a rejection for its 5-hour or weekly window, or avoids it at its `failover_utilization` of either window. A pie is full and red when a weekly window blocks the account. When every pie is red, every account has rejected requests or is at its threshold. A grey `!` means the proxy does not answer. The app reads the status once a minute.
+The menu bar shows one pie per subscription account, in file order. Each pie has the colour of its account and shows the usage of its weekly window. A pie turns red when the proxy tries the account last after a rejection for its 5-hour or weekly window, or avoids it at its `failover_utilization` of either window. A pie is full and red when a weekly window blocks the account. When every pie is red, every account has rejected requests or is at its threshold. A grey `!` means the proxy does not answer. The app reads the status once a minute. When `~/.claude-proxy-relay/proxy_credential` exists, the app sends that credential to the relay at each read.
 
 ## Run as a central service
 
@@ -219,16 +247,18 @@ The relay connects Claude Code on one machine to a central claude-proxy. It list
 2. Write the central proxy's URL, such as `https://claude-proxy.example.com`, to `central_url` in that directory.
 3. Write your Gateway Auth token to `gateway_auth_token` in that directory.
 4. Make both files private: `chmod 600 ~/.claude-proxy-relay/central_url ~/.claude-proxy-relay/gateway_auth_token`.
-5. Start the relay with `pnpm start:relay`. `CLAUDE_PROXY_RELAY_PORT` changes the port.
-6. Set `HTTPS_PROXY=http://127.0.0.1:4100` and `NODE_EXTRA_CA_CERTS=~/.claude-proxy-relay/certificate_authority.pem` for Claude Code.
+5. Start the relay with `pnpm start:relay`. `CLAUDE_PROXY_RELAY_PORT` changes the port. On a machine with several users, give each user's relay a different port.
+6. Set `HTTPS_PROXY=http://relay:<credential>@127.0.0.1:4100` and `NODE_EXTRA_CA_CERTS=~/.claude-proxy-relay/certificate_authority.pem` for Claude Code. `<credential>` is the contents of `~/.claude-proxy-relay/proxy_credential`. The [zsh function](#zsh-function) does this for you.
 
-The relay does not start when a file is missing, or when the group or others can read `central_url` or `gateway_auth_token`. It never logs the token.
+At its first start, the relay writes 32 random bytes to `proxy_credential`, with mode 600. It never replaces the file. Every CONNECT needs the user name `relay` and that credential in `Proxy-Authorization`, or it gets 407. The status request needs them in `Authorization`, or it gets 401. Thus another user on the same machine cannot use your relay, your Gateway Auth token or your subscription accounts. `HTTPS_PROXY` holds the credential, so your own processes can see it. They can also read the file.
+
+The relay does not start when a file is missing, or when the group or others can read `central_url`, `gateway_auth_token` or `proxy_credential`. It never logs the token or the credential.
 
 At each start, the relay downloads the central certificate authority to `certificate_authority.pem`. It replaces the file only with a certificate. When the download fails, it keeps the existing file. While the file does not exist, the relay tries the download again every minute. Claude Code reads the file when it starts, so start Claude Code after the first download.
 
 For each `CONNECT api.anthropic.com:443`, the relay opens a tunnel to the central proxy's `/_proxy/tunnel`, with your token in `X-Gateway-Auth-Token`. The central proxy decrypts and records the connection. Until `certificate_authority.pem` exists, the relay connects to `api.anthropic.com` directly, because Claude Code cannot trust the central proxy without it. The relay also connects directly when the central proxy gives no 101 to `claude-proxy-tunnel` within 5 seconds. Claude Code then uses its own login, and nothing records the requests. The relay logs one line for each fallback, at most once a minute. The relay connects every other CONNECT target from your machine.
 
-The menu bar app reads `/_proxy/api/subscription-account-status` from the relay. The relay gets it from the central proxy, and answers 502 when the central proxy fails. Every other request gets 404. The relay accepts requests only from a loopback address, with the Host `127.0.0.1` or `localhost` on its port.
+The menu bar app reads `/_proxy/api/subscription-account-status` from the relay. The relay gets it from the central proxy, and answers 502 when the central proxy fails. Every other request gets 404. The relay accepts requests only from a loopback address, with the Host `127.0.0.1` or `localhost` on its port, and with the credential.
 
 ## Commands
 

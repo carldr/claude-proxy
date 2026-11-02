@@ -10,6 +10,9 @@ import { afterEach, beforeEach, describe, test } from 'node:test';
 import { createClaudeProxyRelay, readClaudeProxyRelayConfiguration } from '../src/claude_proxy_relay.ts';
 
 const gatewayAuthToken = 'relay-test-gateway-auth-token';
+const relayProxyCredential = 'relay-test-proxy-credential';
+/** The `Basic` credentials that a client of the relay sends, in `Proxy-Authorization` on a CONNECT and in `Authorization` on a GET. */
+const relayBasicCredentials = `Basic ${Buffer.from(`relay:${relayProxyCredential}`).toString('base64')}`;
 const certificateAuthorityPem = '-----BEGIN CERTIFICATE-----\nMIIBfakecertificate\n-----END CERTIFICATE-----\n';
 /** A certificate authority file from an earlier download, which the fake central service's certificate replaces. */
 const existingCertificateAuthorityPem = '-----BEGIN CERTIFICATE-----\nexisting\n-----END CERTIFICATE-----\n';
@@ -134,11 +137,23 @@ function readUntil(socket: net.Socket, expectedEnding: string): Promise<string> 
   });
 }
 
+/** Returns the CONNECT request head for `connectTarget`, with `Proxy-Authorization: proxyAuthorization` unless it is null. */
+function connectRequestHead(connectTarget: string, proxyAuthorization: string | null = relayBasicCredentials) {
+  const proxyAuthorizationLine = proxyAuthorization === null ? '' : `Proxy-Authorization: ${proxyAuthorization}\r\n`;
+  return `CONNECT ${connectTarget} HTTP/1.1\r\nHost: ${connectTarget}\r\n${proxyAuthorizationLine}\r\n`;
+}
+
 /** Sends `CONNECT connectTarget` to the relay, then `payload` through the tunnel. Returns the CONNECT answer and the tunnel's answer. */
-async function connectThroughRelay(relayPort: number, connectTarget: string, payload: string, expectedTunnelAnswer: string) {
+async function connectThroughRelay(
+  relayPort: number,
+  connectTarget: string,
+  payload: string,
+  expectedTunnelAnswer: string,
+  proxyAuthorization: string | null = relayBasicCredentials,
+) {
   const clientSocket = net.connect(relayPort, '127.0.0.1');
   try {
-    clientSocket.write(`CONNECT ${connectTarget} HTTP/1.1\r\nHost: ${connectTarget}\r\n\r\n`);
+    clientSocket.write(connectRequestHead(connectTarget, proxyAuthorization));
     const connectAnswer = await readUntil(clientSocket, '\r\n\r\n');
     clientSocket.write(payload);
     const tunnelAnswer = await readUntil(clientSocket, expectedTunnelAnswer);
@@ -148,13 +163,17 @@ async function connectThroughRelay(relayPort: number, connectTarget: string, pay
   }
 }
 
-/** Sends a GET to the relay with the given Host, and returns the status and the body. */
-async function getFromRelay(relayPort: number, requestPath: string, hostHeader = `127.0.0.1:${relayPort}`) {
-  return new Promise<{ statusCode: number; body: string }>((resolve, reject) => {
-    const relayRequest = http.request({ host: '127.0.0.1', port: relayPort, path: requestPath, headers: { host: hostHeader }, agent: false }, (relayResponse) => {
+/** Sends a GET to the relay with the given Host and `Authorization`, unless it is null, and returns the status, the headers and the body. */
+async function getFromRelay(relayPort: number, requestPath: string, hostHeader = `127.0.0.1:${relayPort}`, authorization: string | null = relayBasicCredentials) {
+  return new Promise<{ statusCode: number; headers: IncomingHttpHeaders; body: string }>((resolve, reject) => {
+    const requestHeaders: Record<string, string> = { host: hostHeader };
+    if (authorization !== null) requestHeaders.authorization = authorization;
+    const relayRequest = http.request({ host: '127.0.0.1', port: relayPort, path: requestPath, headers: requestHeaders, agent: false }, (relayResponse) => {
       const bodyChunks: Buffer[] = [];
       relayResponse.on('data', (bodyChunk: Buffer) => bodyChunks.push(bodyChunk));
-      relayResponse.on('end', () => resolve({ statusCode: relayResponse.statusCode ?? 0, body: Buffer.concat(bodyChunks).toString('utf8') }));
+      relayResponse.on('end', () =>
+        resolve({ statusCode: relayResponse.statusCode ?? 0, headers: relayResponse.headers, body: Buffer.concat(bodyChunks).toString('utf8') }),
+      );
     });
     relayRequest.on('error', reject);
     relayRequest.end();
@@ -189,6 +208,7 @@ describe('claude_proxy_relay', () => {
     const claudeProxyRelay = createClaudeProxyRelay({
       centralUrl,
       gatewayAuthToken,
+      relayProxyCredential,
       relayDirectory,
       anthropicApiHost: '127.0.0.1',
       anthropicApiPort: fakeAnthropicServer.port,
@@ -261,7 +281,7 @@ describe('claude_proxy_relay', () => {
     const { relayPort } = await startRelay(fakeCentralService.url);
     const closedPortUrl = await findClosedPortUrl();
     const clientSocket = net.connect(relayPort, '127.0.0.1');
-    clientSocket.write(`CONNECT ${closedPortUrl.host} HTTP/1.1\r\nHost: ${closedPortUrl.host}\r\n\r\n`);
+    clientSocket.write(connectRequestHead(closedPortUrl.host));
     const connectAnswer = await readUntil(clientSocket, '\n');
     clientSocket.destroy();
     assert.match(connectAnswer, /^HTTP\/1\.1 502 Bad Gateway\r\n/);
@@ -286,7 +306,7 @@ describe('claude_proxy_relay', () => {
     const fakeCentralService = await startCentral('switch_protocols_and_echo');
     const { relayPort } = await startRelay(fakeCentralService.url);
     const statusAnswer = await getFromRelay(relayPort, '/_proxy/api/subscription-account-status');
-    assert.deepEqual(statusAnswer, { statusCode: 200, body: subscriptionAccountStatusBody });
+    assert.deepEqual({ statusCode: statusAnswer.statusCode, body: statusAnswer.body }, { statusCode: 200, body: subscriptionAccountStatusBody });
     const statusRequest = fakeCentralService.receivedRequests.find((receivedRequest) => receivedRequest.path === '/_proxy/api/subscription-account-status');
     assert.ok(statusRequest);
     assert.equal(statusRequest.headers['x-gateway-auth-token'], gatewayAuthToken);
@@ -296,6 +316,58 @@ describe('claude_proxy_relay', () => {
     const { relayPort: relayPortWithCentralDown } = await startRelay(await findClosedPortUrl());
     const statusAnswerWithCentralDown = await getFromRelay(relayPortWithCentralDown, '/_proxy/api/subscription-account-status');
     assert.equal(statusAnswerWithCentralDown.statusCode, 502);
+  });
+
+  test('refuses a CONNECT without the proxy credential', async () => {
+    const fakeCentralService = await startCentral('switch_protocols_and_echo');
+    const otherHostServer = await startPrefixEchoServer('other:');
+    closeAfterTest.push(() => otherHostServer.close());
+    const { relayPort } = await startRelay(fakeCentralService.url);
+    const basicCredentials = (credentialPair: string) => `Basic ${Buffer.from(credentialPair).toString('base64')}`;
+    const refusedProxyAuthorizations = [
+      null,
+      basicCredentials('relay:wrong-proxy-credential'),
+      basicCredentials(`other-user:${relayProxyCredential}`),
+      basicCredentials(relayProxyCredential),
+      `Bearer ${relayProxyCredential}`,
+    ];
+    for (const connectTarget of ['api.anthropic.com:443', `127.0.0.1:${otherHostServer.port}`]) {
+      for (const proxyAuthorization of refusedProxyAuthorizations) {
+        const clientSocket = net.connect(relayPort, '127.0.0.1');
+        const socketClosed = new Promise<void>((resolve) => clientSocket.on('close', () => resolve()));
+        let connectAnswer = '';
+        clientSocket.on('data', (answerChunk: Buffer) => (connectAnswer += answerChunk.toString('utf8')));
+        clientSocket.write(connectRequestHead(connectTarget, proxyAuthorization));
+        await socketClosed;
+        assert.match(connectAnswer, /^HTTP\/1\.1 407 Proxy Authentication Required\r\n/, `${connectTarget} with ${proxyAuthorization}`);
+        assert.match(connectAnswer, /\r\nProxy-Authenticate: Basic realm="claude-proxy-relay"\r\n/i);
+      }
+    }
+    assert.equal(fakeAnthropicServer.acceptedConnectionCount(), 0);
+    assert.equal(otherHostServer.acceptedConnectionCount(), 0);
+    assert.equal(fakeCentralService.receivedRequests.filter((receivedRequest) => receivedRequest.path === '/_proxy/tunnel').length, 0);
+  });
+
+  test('accepts a CONNECT with the proxy credential and a lower-case scheme', async () => {
+    const fakeCentralService = await startCentral('switch_protocols_and_echo');
+    const { relayPort } = await startRelay(fakeCentralService.url);
+    const lowerCaseSchemeCredentials = relayBasicCredentials.replace(/^Basic/, 'basic');
+    const { connectAnswer, tunnelAnswer } = await connectThroughRelay(relayPort, 'api.anthropic.com:443', 'client hello', 'central:client hello', lowerCaseSchemeCredentials);
+    assert.equal(connectAnswer, 'HTTP/1.1 200 Connection Established\r\n\r\n');
+    assert.equal(tunnelAnswer, 'central:client hello');
+  });
+
+  test('refuses the status request without the credential', async () => {
+    const fakeCentralService = await startCentral('switch_protocols_and_echo');
+    const { relayPort } = await startRelay(fakeCentralService.url);
+    const relayHost = `127.0.0.1:${relayPort}`;
+    for (const authorization of [null, `Basic ${Buffer.from('relay:wrong-proxy-credential').toString('base64')}`]) {
+      const refusedAnswer = await getFromRelay(relayPort, '/_proxy/api/subscription-account-status', relayHost, authorization);
+      assert.equal(refusedAnswer.statusCode, 401);
+      assert.equal(refusedAnswer.headers['www-authenticate'], 'Basic realm="claude-proxy-relay"');
+    }
+    assert.equal(fakeCentralService.receivedRequests.filter((receivedRequest) => receivedRequest.path === '/_proxy/api/subscription-account-status').length, 0);
+    assert.equal((await getFromRelay(relayPort, '/_proxy/api/subscription-account-status', relayHost)).statusCode, 200);
   });
 
   test('answers 404 to every other request', async () => {
@@ -396,6 +468,24 @@ describe('readClaudeProxyRelayConfiguration', () => {
     const relayConfiguration = readClaudeProxyRelayConfiguration(relayDirectory);
     assert.equal(relayConfiguration.centralUrl.href, 'https://claude-proxy.example.com/');
     assert.equal(relayConfiguration.gatewayAuthToken, gatewayAuthToken);
+  });
+
+  test('writes the proxy credential once at first start, mode 600', () => {
+    writeRelayFile('central_url', 'https://claude-proxy.example.com', 0o600);
+    writeRelayFile('gateway_auth_token', gatewayAuthToken, 0o600);
+    const relayProxyCredentialPath = path.join(relayDirectory, 'proxy_credential');
+    const firstRelayConfiguration = readClaudeProxyRelayConfiguration(relayDirectory);
+    assert.match(firstRelayConfiguration.relayProxyCredential, /^[A-Za-z0-9_-]{43}$/);
+    assert.equal(fs.readFileSync(relayProxyCredentialPath, 'utf8').trim(), firstRelayConfiguration.relayProxyCredential);
+    assert.equal(fs.statSync(relayProxyCredentialPath).mode & 0o777, 0o600);
+    assert.equal(readClaudeProxyRelayConfiguration(relayDirectory).relayProxyCredential, firstRelayConfiguration.relayProxyCredential);
+
+    fs.chmodSync(relayProxyCredentialPath, 0o644);
+    assert.throws(
+      () => readClaudeProxyRelayConfiguration(relayDirectory),
+      (error: Error) =>
+        error.message.includes(`refuses ${relayProxyCredentialPath}`) && !error.message.includes(firstRelayConfiguration.relayProxyCredential),
+    );
   });
 
   test('refuses a missing file and names it', () => {

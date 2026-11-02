@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http, { type ClientRequest, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import https from 'node:https';
@@ -30,12 +31,26 @@ const certificateAuthorityMaximumBytes = 64 * 1024;
 
 const connectAcceptedResponseHead = 'HTTP/1.1 200 Connection Established\r\n\r\n';
 
+/** The file in the relay directory that holds the proxy credential. The relay writes it once, with mode 600. */
+export const relayProxyCredentialFileName = 'proxy_credential';
+/** The user name that a client sends with the proxy credential, in `Basic` credentials. */
+export const relayProxyCredentialUserName = 'relay';
+/** The realm in the relay's `Proxy-Authenticate` and `WWW-Authenticate` headers. */
+const relayProxyCredentialRealm = 'claude-proxy-relay';
+const connectRefusedResponseHead =
+  `HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="${relayProxyCredentialRealm}"\r\nconnection: close\r\ncontent-length: 0\r\n\r\n`;
+
 export interface ClaudeProxyRelayOptions {
   /** The central claude-proxy behind Caddy and Gateway Auth, with an `http:` or `https:` scheme. */
   centralUrl: URL;
   /** Sent as `X-Gateway-Auth-Token` on every request to the central claude-proxy. The relay never logs it. */
   gatewayAuthToken: string;
-  /** Holds `central_url`, `gateway_auth_token` and the downloaded `certificate_authority.pem`. */
+  /**
+   * Every client sends this credential with the user name `relay`, so that another Unix user on this machine cannot use the relay.
+   * The relay never logs it.
+   */
+  relayProxyCredential: string;
+  /** Holds `central_url`, `gateway_auth_token`, `proxy_credential` and the downloaded `certificate_authority.pem`. */
   relayDirectory: string;
   /** The host and port of the direct tunnel when the central claude-proxy fails: `api.anthropic.com:443` outside tests. */
   anthropicApiHost: string;
@@ -52,19 +67,22 @@ export interface ClaudeProxyRelay {
   close(): Promise<void>;
 }
 
-/** The contents of `central_url` and `gateway_auth_token` in the relay directory. */
+/** The contents of `central_url`, `gateway_auth_token` and `proxy_credential` in the relay directory. */
 export interface ClaudeProxyRelayConfiguration {
   centralUrl: URL;
   gatewayAuthToken: string;
+  relayProxyCredential: string;
 }
 
 /**
- * Reads `central_url` and `gateway_auth_token` from `relayDirectory` and trims them. It throws, and names the file,
- * when a file is missing or empty, when the URL is not `http:` or `https:`, or when the group or others can read a file.
+ * Reads `central_url`, `gateway_auth_token` and `proxy_credential` from `relayDirectory` and trims them. It first writes
+ * `proxy_credential` with 32 random bytes when the file does not exist. It throws, and names the file, when a file is missing
+ * or empty, when the URL is not `http:` or `https:`, or when the group or others can read a file.
  */
 export function readClaudeProxyRelayConfiguration(relayDirectory: string): ClaudeProxyRelayConfiguration {
   const centralUrlPath = path.join(relayDirectory, 'central_url');
   const gatewayAuthTokenPath = path.join(relayDirectory, 'gateway_auth_token');
+  const relayProxyCredentialPath = path.join(relayDirectory, relayProxyCredentialFileName);
   const readRequiredFile = (requiredFilePath: string) => {
     let fileContents: string;
     let fileMode: number;
@@ -86,7 +104,46 @@ export function readClaudeProxyRelayConfiguration(relayDirectory: string): Claud
     throw new Error(`claude-proxy-relay needs an http: or https: URL in ${centralUrlPath}.`);
   }
   const gatewayAuthToken = readRequiredFile(gatewayAuthTokenPath);
-  return { centralUrl, gatewayAuthToken };
+  createRelayProxyCredentialFile(relayProxyCredentialPath);
+  const relayProxyCredential = readRequiredFile(relayProxyCredentialPath);
+  return { centralUrl, gatewayAuthToken, relayProxyCredential };
+}
+
+/** Writes 32 random bytes as base64url to `relayProxyCredentialPath`, with mode 600. The exclusive create never replaces an existing file. */
+function createRelayProxyCredentialFile(relayProxyCredentialPath: string) {
+  let relayProxyCredentialFileDescriptor: number;
+  try {
+    relayProxyCredentialFileDescriptor = fs.openSync(relayProxyCredentialPath, 'wx', 0o600);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return;
+    throw new Error(`claude-proxy-relay cannot create ${relayProxyCredentialPath}: ${(error as Error).message}`);
+  }
+  try {
+    fs.writeFileSync(relayProxyCredentialFileDescriptor, `${crypto.randomBytes(32).toString('base64url')}\n`);
+  } finally {
+    fs.closeSync(relayProxyCredentialFileDescriptor);
+  }
+}
+
+/** Compares the SHA-256 digests of two strings with `timingSafeEqual`, so the time does not show where they differ, or their lengths. */
+function isTimingSafeEqualText(receivedText: string, expectedText: string): boolean {
+  const sha256Digest = (digestedText: string) => crypto.createHash('sha256').update(digestedText, 'utf8').digest();
+  return crypto.timingSafeEqual(sha256Digest(receivedText), sha256Digest(expectedText));
+}
+
+/**
+ * Returns true when `authorizationHeader` holds `Basic` credentials, with any case of the scheme, for the user `relay` and
+ * `relayProxyCredential`. The relay reads `Proxy-Authorization` on a CONNECT and `Authorization` on another request.
+ */
+function hasRelayProxyCredential(authorizationHeader: string | undefined, relayProxyCredential: string): boolean {
+  const basicCredentialsMatch = /^basic\s+(\S+)\s*$/i.exec(authorizationHeader ?? '');
+  if (!basicCredentialsMatch) return false;
+  const credentialPair = Buffer.from(basicCredentialsMatch[1], 'base64').toString('utf8');
+  const separatorIndex = credentialPair.indexOf(':');
+  if (separatorIndex === -1) return false;
+  const isUserNameEqual = isTimingSafeEqualText(credentialPair.slice(0, separatorIndex), relayProxyCredentialUserName);
+  const isCredentialEqual = isTimingSafeEqualText(credentialPair.slice(separatorIndex + 1), relayProxyCredential);
+  return isUserNameEqual && isCredentialEqual;
 }
 
 /** Returns true for an address in 127.0.0.0/8, for `::1`, and for an IPv4-mapped address in 127.0.0.0/8. */
@@ -277,6 +334,10 @@ export function createClaudeProxyRelay(options: ClaudeProxyRelayOptions): Claude
   const httpServer = http.createServer((clientRequest, clientResponse) => {
     if (!isAcceptedRelayRequest(clientRequest, httpServer)) {
       clientResponse.writeHead(403, { 'content-type': 'text/plain' }).end('claude-proxy-relay does not accept requests addressed to this host name.\n');
+    } else if (!hasRelayProxyCredential(clientRequest.headers.authorization, options.relayProxyCredential)) {
+      clientResponse
+        .writeHead(401, { 'content-type': 'text/plain', 'www-authenticate': `Basic realm="${relayProxyCredentialRealm}"` })
+        .end(`claude-proxy-relay needs the user ${relayProxyCredentialUserName} and the credential in ${relayProxyCredentialFileName}.\n`);
     } else if (clientRequest.method === 'GET' && (clientRequest.url ?? '').split('?')[0] === subscriptionAccountStatusPath) {
       forwardSubscriptionAccountStatus(clientResponse);
     } else {
@@ -291,6 +352,11 @@ export function createClaudeProxyRelay(options: ClaudeProxyRelayOptions): Claude
     // A CONNECT carries the target in its Host, so the relay checks only the connection. A web page cannot send CONNECT.
     if (!isLoopbackAddress(connectRequest.socket.remoteAddress)) {
       clientSocket.end('HTTP/1.1 403 Forbidden\r\nconnection: close\r\ncontent-length: 0\r\n\r\n');
+      return;
+    }
+    // Another Unix user on this machine also connects from a loopback address, so every CONNECT needs the proxy credential.
+    if (!hasRelayProxyCredential(connectRequest.headers['proxy-authorization'], options.relayProxyCredential)) {
+      clientSocket.end(connectRefusedResponseHead);
       return;
     }
     if (connectRequestHead.length > 0) clientSocket.unshift(connectRequestHead);
