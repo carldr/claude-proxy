@@ -985,8 +985,8 @@ describe('claude-proxy', () => {
       assert.equal(isAcceptedRequest(requestFrom('::ffff:127.0.0.1', `localhost:${proxyPort}`), claudeProxyServer.httpServer, publicHostname), true);
       assert.equal(isAcceptedRequest(requestFrom('::1', `localhost:${proxyPort}`), claudeProxyServer.httpServer, publicHostname), true);
       assert.equal(isAcceptedRequest(requestFrom('172.17.0.5', publicHostname), claudeProxyServer.httpServer, publicHostname), true);
-      // Without a public hostname, the remote address does not count.
-      assert.equal(isAcceptedRequest(requestFrom('172.17.0.5', `127.0.0.1:${proxyPort}`), claudeProxyServer.httpServer, null), true);
+      // Without a public hostname, a loopback Host also needs a loopback connection.
+      assert.equal(isAcceptedRequest(requestFrom('172.17.0.5', `127.0.0.1:${proxyPort}`), claudeProxyServer.httpServer, null), false);
       // A loopback request needs no Gateway Auth.
       assert.equal(await sendWithHeaders({}), 200);
       assert.equal(receivedGatewayAuthVerifyRequests.length, 0);
@@ -1003,7 +1003,9 @@ describe('claude-proxy', () => {
       assert.equal(isAcceptedRequest(requestFrom('::1', `localhost:${proxyPort}`), claudeProxyServer.httpServer, null), true);
     });
 
-    test('refuses to listen on a non-loopback address without a public hostname', () => {
+    test('refuses to listen on a non-loopback address without a public hostname', async () => {
+      // `afterEach` closes the server of each test, so this test also starts one.
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
       assert.throws(() => assertListenAddressNeedsPublicHostname('0.0.0.0', null), /CLAUDE_PROXY_LISTEN_ADDRESS.*CLAUDE_PROXY_PUBLIC_HOSTNAME/);
       assert.doesNotThrow(() => assertListenAddressNeedsPublicHostname('127.0.0.1', null));
       assert.doesNotThrow(() => assertListenAddressNeedsPublicHostname('::1', null));
