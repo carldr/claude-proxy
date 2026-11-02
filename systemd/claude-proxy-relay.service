@@ -1,0 +1,18 @@
+# systemd user unit for the claude-proxy relay on a Roy host.
+# The dotfiles clone the repository to ~/claude-proxy and install this unit.
+# The relay reads central_url and gateway_auth_token from ~/.claude-proxy-relay.
+# A shared host sets the port of each user with a drop-in:
+#   systemctl --user edit claude-proxy-relay.service
+#   [Service]
+#   Environment=CLAUDE_PROXY_RELAY_PORT=<port>
+[Unit]
+Description=claude-proxy relay
+
+[Service]
+Environment=PATH=/usr/local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/local/share/mise/shims/node %h/claude-proxy/packages/claude_proxy_relay/src/main.ts
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

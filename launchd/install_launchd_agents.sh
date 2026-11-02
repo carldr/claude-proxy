@@ -1,23 +1,40 @@
 #!/bin/sh
 # Installs and starts two launchd agents that run at login:
-#   local.claude-proxy.server    runs claude_proxy_server on port 4100, and restarts it if it stops.
+#   local.claude-proxy.relay     runs claude_proxy_relay on port 4100, and restarts it if it stops.
 #   local.claude-proxy.menu-bar  runs ClaudeProxyMenuBar.app, and restarts it if it crashes.
-# Run "pnpm build" first. Run this script again after a Node.js upgrade, because the agent stores the node path.
+# The relay agent replaces local.claude-proxy.server. The script removes the server agent only after
+# it finds central_url and gateway_auth_token in ~/.claude-proxy-relay, so a machine without them keeps its local proxy.
+# Run "pnpm build" first. Run this script again after a Node.js upgrade, because the agents store the node path.
 set -eu
 
 repository_directory="$(cd "$(dirname "$0")/.." && pwd)"
 launch_agents_directory="$HOME/Library/LaunchAgents"
-claude_proxy_directory="$HOME/.claude-proxy"
+claude_proxy_relay_directory="$HOME/.claude-proxy-relay"
 node_path="$(command -v node)"
 menu_bar_executable_path="$repository_directory/macos/claude_proxy_menu_bar/build/ClaudeProxyMenuBar.app/Contents/MacOS/ClaudeProxyMenuBar"
 user_domain="gui/$(id -u)"
 
-if [ ! -f "$repository_directory/packages/claude_proxy_web_ui/dist/index.html" ] || [ ! -x "$menu_bar_executable_path" ]; then
+if [ ! -x "$menu_bar_executable_path" ]; then
   echo "Run \"pnpm build\" in $repository_directory first." >&2
   exit 1
 fi
 
-mkdir -p "$launch_agents_directory" "$claude_proxy_directory"
+missing_relay_files=""
+for relay_file_name in central_url gateway_auth_token; do
+  if [ ! -s "$claude_proxy_relay_directory/$relay_file_name" ]; then
+    missing_relay_files="$missing_relay_files $claude_proxy_relay_directory/$relay_file_name"
+  fi
+done
+if [ -n "$missing_relay_files" ]; then
+  echo "The relay needs these files, and they are missing or empty:" >&2
+  for missing_relay_file in $missing_relay_files; do
+    echo "  $missing_relay_file" >&2
+  done
+  echo "Nothing changed. See \"Relay\" in README.md." >&2
+  exit 1
+fi
+
+mkdir -p "$launch_agents_directory" "$claude_proxy_relay_directory"
 
 write_launch_agent() {
   launch_agent_label="$1"
@@ -41,9 +58,9 @@ write_launch_agent() {
   <key>KeepAlive</key>
   $launch_agent_keep_alive
   <key>StandardOutPath</key>
-  <string>$claude_proxy_directory/$launch_agent_label.log</string>
+  <string>$claude_proxy_relay_directory/$launch_agent_label.log</string>
   <key>StandardErrorPath</key>
-  <string>$claude_proxy_directory/$launch_agent_label.log</string>
+  <string>$claude_proxy_relay_directory/$launch_agent_label.log</string>
 </dict>
 </plist>
 PLIST
@@ -52,12 +69,15 @@ PLIST
   echo "Started $launch_agent_label ($launch_agent_path)"
 }
 
-write_launch_agent local.claude-proxy.server "
+launchctl bootout "$user_domain/local.claude-proxy.server" 2>/dev/null || true
+rm -f "$launch_agents_directory/local.claude-proxy.server.plist"
+
+write_launch_agent local.claude-proxy.relay "
     <string>$node_path</string>
-    <string>$repository_directory/packages/claude_proxy_server/src/main.ts</string>" "<true/>"
+    <string>$repository_directory/packages/claude_proxy_relay/src/main.ts</string>" "<true/>"
 
 write_launch_agent local.claude-proxy.menu-bar "
     <string>$menu_bar_executable_path</string>" "<dict><key>SuccessfulExit</key><false/></dict>"
 
-echo "Web UI: http://127.0.0.1:4100/_proxy/"
-echo "Send Claude Code through the proxy with: export ANTHROPIC_BASE_URL=http://127.0.0.1:4100"
+echo "Relay log: $claude_proxy_relay_directory/local.claude-proxy.relay.log"
+echo "Claude Code uses the relay through HTTPS_PROXY. See \"Connecting Claude Code\" in README.md."

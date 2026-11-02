@@ -14,7 +14,7 @@ claude-proxy is a local proxy for Claude Code on `127.0.0.1:4100`. It records `/
 | `pnpm start:relay` | Runs the relay from `packages/claude_proxy_relay`. It listens on port 4100, like the proxy. |
 | `pnpm build` | Builds the web UI into `packages/claude_proxy_web_ui/dist` and the menu bar app into `macos/claude_proxy_menu_bar/build`. |
 | `pnpm dev:server` / `pnpm dev:web_ui` | Runs the proxy with `--watch`, or the Vite dev server with `/_proxy/api` sent to port 4100. |
-| `launchctl kickstart -k gui/$(id -u)/local.claude-proxy.server` | Restarts the installed proxy after a server change. Run `pnpm build` first if the web UI changed. |
+| `launchctl kickstart -k gui/$(id -u)/local.claude-proxy.relay` | Restarts the installed relay after a relay change. 
 
 To test against the real API without touching the installed proxy or `~/.claude-proxy`, start a second instance and send Claude Code through it:
 
@@ -112,4 +112,4 @@ The index is contentless (`content = ''`, `contentless_delete = 1`): it keeps no
 
 - The web UI is served from `dist` under `/_proxy/`. `vite.config.ts` removes the Origin in the dev proxy only when it is the dev server's own.
 - The menu bar app has port 4100 fixed in `ClaudeProxyMenuBar.swift`. It reads `GET /_proxy/api/subscription-account-status` once a minute, and every 5 seconds while the proxy does not answer. At each read it reads `~/.claude-proxy-relay/proxy_credential`, and sends `Authorization: Basic` for `relay` and the credential when the file exists. Without the file it sends no `Authorization`, because the local proxy needs none. It draws one weekly usage pie per account, and the pie turns red when a rejection blocks the account, so the proxy tries it last, or when the account is at its `failover_utilization`.
-- `launchd/install_launchd_agents.sh` stores the absolute `node` path in the agent plist. Run the script again after a Node.js upgrade.
+- `launchd/install_launchd_agents.sh` installs `local.claude-proxy.relay` and `local.claude-proxy.menu-bar`, and stores the absolute `node` path in each plist. Run the script again after a Node.js upgrade. It exits with status 1 before it changes anything when `~/.claude-proxy-relay/central_url` or `gateway_auth_token` is missing. Then it removes the agent `local.claude-proxy.server` of an earlier version. `launchd/uninstall_launchd_agents.sh` removes all three. `systemd/claude-proxy-relay.service` is the relay's systemd user unit for Roy hosts. It uses the absolute `node` path of mise, because systemd searches a bare command name only in its own directories and ignores `Environment=PATH`.

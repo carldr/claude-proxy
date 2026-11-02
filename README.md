@@ -28,46 +28,65 @@ With a central claude-proxy, each machine runs the relay on `127.0.0.1:4100` in 
 
 ## Install
 
+These steps install the relay on a Mac. The relay connects Claude Code to a central claude-proxy. To run the proxy on the Mac itself, see [Run the proxy locally](#run-the-proxy-locally). On a Roy host, see [Roy host](#roy-host).
+
 1. Install the dependencies:
 
    ```sh
    pnpm install
    ```
 
-2. Build the web UI and the menu bar app:
+2. Build the menu bar app:
 
    ```sh
    pnpm build
    ```
 
-3. Install the launchd agents. They start the proxy and the menu bar app now and at each login:
+3. Write the central proxy's URL to `~/.claude-proxy-relay/central_url` and your Gateway Auth token to `~/.claude-proxy-relay/gateway_auth_token`, and make both private. See [Relay](#relay).
+4. Install the launchd agents. They start the relay and the menu bar app now and at each login:
 
    ```sh
    pnpm install_launchd_agents
    ```
 
-4. Edit `~/.claude-proxy/subscription_accounts.yml`. The first start of the proxy creates this file. See [Configuration](#configuration).
+   The script exits with status 1, and changes nothing, when `central_url` or `gateway_auth_token` is missing. Otherwise it removes the agent `local.claude-proxy.server` of an earlier version, so the relay can use port 4100. The relay log is `~/.claude-proxy-relay/local.claude-proxy.relay.log`.
 
-5. Create the certificate authority and the certificate for `api.anthropic.com`. The script refuses to replace an existing certificate authority:
+5. Make the macOS keychain trust the central certificate authority, so that Claude Code trusts it. The relay downloads the file at its first start:
+
+   ```sh
+   sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ~/.claude-proxy-relay/certificate_authority.pem
+   ```
+
+6. Point Claude Code at the relay with one of the methods in [Connecting Claude Code](#connecting-claude-code).
+
+Run `pnpm install_launchd_agents` again after a Node.js upgrade, because the agents store the path to `node`.
+
+Delete `~/.claude-proxy/routes.yml` after an upgrade from an earlier version. It holds API keys in plain text, and the proxy no longer reads it.
+
+## Run the proxy locally
+
+`pnpm install_launchd_agents` does not install the proxy as an agent. To run the proxy on one machine without a central proxy, follow these steps.
+
+1. Stop the relay agent, because the proxy and the relay both use port 4100. Run `pnpm uninstall_launchd_agents`.
+2. Run `pnpm build`, and then `pnpm start`. The first start creates `~/.claude-proxy/subscription_accounts.yml`. Edit it. See [Configuration](#configuration).
+3. Create the certificate authority and the certificate for `api.anthropic.com`. The script refuses to replace an existing certificate authority:
 
    ```sh
    sh scripts/create_certificate_authority.sh ~/.claude-proxy
    ```
 
-   Make the macOS keychain trust the certificate authority, so that Claude Code trusts it:
+   Make the macOS keychain trust the certificate authority:
 
    ```sh
    sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ~/.claude-proxy/certificate_authority.pem
    ```
 
-6. Point Claude Code at the proxy with one of the methods in [Connecting Claude Code](#connecting-claude-code).
-7. Log in to each subscription account from the web UI. See [Log in to the subscription accounts](#log-in-to-the-subscription-accounts).
-
-Run `pnpm install_launchd_agents` again after a Node.js upgrade, because the agent stores the path to `node`.
-
-Delete `~/.claude-proxy/routes.yml` after an upgrade from an earlier version. It holds API keys in plain text, and the proxy no longer reads it.
+4. Point Claude Code at the proxy with the local-proxy variants in [Connecting Claude Code](#connecting-claude-code).
+5. Log in to each subscription account from the web UI. See [Log in to the subscription accounts](#log-in-to-the-subscription-accounts).
 
 ## Connecting Claude Code
+
+With the relay, Claude Code reaches the relay on `127.0.0.1:4100`, and uses `NODE_EXTRA_CA_CERTS="$HOME/.claude-proxy-relay/certificate_authority.pem"`. A local proxy uses `~/.claude-proxy/certificate_authority.pem`. The examples below show both.
 
 Claude Code reaches the proxy in one of two ways:
 
@@ -155,10 +174,20 @@ With the relay, use the credential URL and the relay's certificate authority. Re
 
 ### `export` in the shell profile
 
+For a local proxy:
+
 ```sh
 export HTTPS_PROXY=http://127.0.0.1:4100
 export NO_PROXY=localhost,127.0.0.1
 export NODE_EXTRA_CA_CERTS="$HOME/.claude-proxy/certificate_authority.pem"
+```
+
+For the relay, read the credential from its file:
+
+```sh
+export HTTPS_PROXY="http://relay:$(<~/.claude-proxy-relay/proxy_credential)@127.0.0.1:4100"
+export NO_PROXY=localhost,127.0.0.1
+export NODE_EXTRA_CA_CERTS="$HOME/.claude-proxy-relay/certificate_authority.pem"
 ```
 
 ### `ANTHROPIC_BASE_URL`
@@ -241,7 +270,7 @@ A container image and a compose file run the proxy on a server, for several mach
 
 ## Relay
 
-The relay connects Claude Code on one machine to a central claude-proxy. It listens on `127.0.0.1:4100`, so stop the local proxy on that machine first.
+The relay connects Claude Code on one machine to a central claude-proxy. It listens on `127.0.0.1:4100`, so stop the local proxy on that machine first. `pnpm install_launchd_agents` starts the relay at login on a Mac.
 
 1. Make the relay directory, `~/.claude-proxy-relay`. `CLAUDE_PROXY_RELAY_DIRECTORY` changes it.
 2. Write the central proxy's URL, such as `https://claude-proxy.example.com`, to `central_url` in that directory.
@@ -260,6 +289,16 @@ For each `CONNECT api.anthropic.com:443`, the relay opens a tunnel to the centra
 
 The menu bar app reads `/_proxy/api/subscription-account-status` from the relay. The relay gets it from the central proxy, and answers 502 when the central proxy fails. Every other request gets 404. The relay accepts requests only from a loopback address, with the Host `127.0.0.1` or `localhost` on its port, and with the credential.
 
+## Roy host
+
+On a Roy host, the user's dotfiles clone this repository to `~/claude-proxy` and install `systemd/claude-proxy-relay.service` as a systemd user unit. The unit runs the relay with the `node` of mise, and restarts it after 5 seconds when it stops. Write `central_url` and `gateway_auth_token` to `~/.claude-proxy-relay` first. See [Relay](#relay). Then run:
+
+```sh
+systemctl --user enable --now claude-proxy-relay.service
+```
+
+On a host with several users, give each user a different port. Run `systemctl --user edit claude-proxy-relay.service` and add `Environment=CLAUDE_PROXY_RELAY_PORT=<port>` under `[Service]`. Set the same variable in the shell that runs the [zsh function](#zsh-function).
+
 ## Commands
 
 | Command | Action |
@@ -271,8 +310,8 @@ The menu bar app reads `/_proxy/api/subscription-account-status` from the relay.
 | `pnpm typecheck` | Type-checks every package. |
 | `pnpm dev:server` | Runs the proxy and restarts it when a source file changes. |
 | `pnpm dev:web_ui` | Runs the Vite dev server for the web UI, with `/_proxy/api` sent to port 4100. |
-| `pnpm install_launchd_agents` | Installs and starts the launchd agents. |
-| `pnpm uninstall_launchd_agents` | Stops and removes the launchd agents. Your data stays in `~/.claude-proxy`. |
+| `pnpm install_launchd_agents` | Installs and starts the launchd agents of the relay and the menu bar app. |
+| `pnpm uninstall_launchd_agents` | Stops and removes the launchd agents, including `local.claude-proxy.server` of an earlier version. Your data stays in `~/.claude-proxy` and `~/.claude-proxy-relay`. |
 
 ## Project layout
 
@@ -282,6 +321,7 @@ packages/claude_proxy_relay/    Node.js relay from a machine's Claude Code to a 
 packages/claude_proxy_web_ui/   React web UI, served by the proxy under /_proxy/
 macos/claude_proxy_menu_bar/    SwiftUI menu bar app
 launchd/                        Scripts that install and remove the launchd agents
+systemd/                        systemd user unit of the relay, for Roy hosts
 deploy/                         Compose file and instructions for the central service
 Dockerfile                      The image of the central service
 ```
