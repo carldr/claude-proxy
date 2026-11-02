@@ -8,3 +8,8 @@ macos
 launchd
 deploy
 .env
+**/.env
+**/.env.*
+**/*.pem
+**/*.sqlite
+**/*.sqlite-*
