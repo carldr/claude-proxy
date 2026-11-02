@@ -16,6 +16,8 @@ claude-proxy is a local proxy between Claude Code and the Anthropic API. It reco
 
 The proxy swaps the token on `/v1/messages*` only. Requests that carry their own API key, and requests to other paths, go to `api.anthropic.com` unchanged with Claude Code's own token. Remote Control, `/usage` and telemetry stay on the account that Claude Code is logged in to.
 
+With a central claude-proxy, each machine runs the relay on `127.0.0.1:4100` in place of the proxy. The relay sends the `api.anthropic.com` connections to the central proxy, which does steps 2 to 7. When the central proxy fails, the relay connects Claude Code to `api.anthropic.com` directly. [Relay](#relay) gives the details.
+
 ## Requirements
 
 - macOS 13 or later
@@ -209,14 +211,34 @@ The menu bar shows one pie per subscription account, in file order. Each pie has
 
 A container image and a compose file run the proxy on a server, for several machines. `deploy/README.md` gives the build, run and certificate authority steps.
 
+## Relay
+
+The relay connects Claude Code on one machine to a central claude-proxy. It listens on `127.0.0.1:4100`, so stop the local proxy on that machine first.
+
+1. Make the relay directory, `~/.claude-proxy-relay`. `CLAUDE_PROXY_RELAY_DIRECTORY` changes it.
+2. Write the central proxy's URL, such as `https://claude-proxy.example.com`, to `central_url` in that directory.
+3. Write your Gateway Auth token to `gateway_auth_token` in that directory.
+4. Make the token file private: `chmod 600 ~/.claude-proxy-relay/gateway_auth_token`.
+5. Start the relay with `pnpm start:relay`. `CLAUDE_PROXY_RELAY_PORT` changes the port.
+6. Set `HTTPS_PROXY=http://127.0.0.1:4100` and `NODE_EXTRA_CA_CERTS=~/.claude-proxy-relay/certificate_authority.pem` for Claude Code.
+
+The relay does not start when a file is missing, or when the group or others can read `gateway_auth_token`. It never logs the token.
+
+At each start, the relay downloads the central certificate authority to `certificate_authority.pem`. It replaces the file only with a certificate. When the download fails, it keeps the existing file. Claude Code reads the file when it starts, so start Claude Code after the first download.
+
+For each `CONNECT api.anthropic.com:443`, the relay opens a tunnel to the central proxy's `/_proxy/tunnel`, with your token in `X-Gateway-Auth-Token`. The central proxy decrypts and records the connection. When the central proxy gives no 101 within 5 seconds, the relay connects to `api.anthropic.com` directly. Claude Code then uses its own login, and nothing records the requests. The relay logs one line for each fallback, at most once a minute. The relay connects every other CONNECT target from your machine.
+
+The menu bar app reads `/_proxy/api/subscription-account-status` from the relay. The relay gets it from the central proxy, and answers 502 when the central proxy fails. Every other request gets 404. The relay accepts requests only from a loopback address, with the Host `127.0.0.1` or `localhost` on its port.
+
 ## Commands
 
 | Command | Action |
 | --- | --- |
 | `pnpm build` | Builds the web UI and the menu bar app. |
 | `pnpm start` | Runs the proxy in the foreground. |
-| `pnpm test` | Runs the proxy tests against fake upstream servers. |
-| `pnpm typecheck` | Type-checks both packages. |
+| `pnpm start:relay` | Runs the relay in the foreground. |
+| `pnpm test` | Runs the proxy and relay tests against fake upstream servers. |
+| `pnpm typecheck` | Type-checks every package. |
 | `pnpm dev:server` | Runs the proxy and restarts it when a source file changes. |
 | `pnpm dev:web_ui` | Runs the Vite dev server for the web UI, with `/_proxy/api` sent to port 4100. |
 | `pnpm install_launchd_agents` | Installs and starts the launchd agents. |
@@ -226,6 +248,7 @@ A container image and a compose file run the proxy on a server, for several mach
 
 ```
 packages/claude_proxy_server/   Node.js proxy, request database, subscription account routing and web API
+packages/claude_proxy_relay/    Node.js relay from a machine's Claude Code to a central proxy
 packages/claude_proxy_web_ui/   React web UI, served by the proxy under /_proxy/
 macos/claude_proxy_menu_bar/    SwiftUI menu bar app
 launchd/                        Scripts that install and remove the launchd agents

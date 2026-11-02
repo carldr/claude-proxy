@@ -8,9 +8,10 @@ claude-proxy is a local proxy for Claude Code on `127.0.0.1:4100`. It records `/
 
 | Command | Action |
 | --- | --- |
-| `pnpm test` | Runs the server tests (`node --test`) against fake upstream HTTP servers. |
+| `pnpm test` | Runs the server and relay tests (`node --test 'packages/*/test/*.test.ts'`) against fake upstream servers. |
 | `node --test --test-name-pattern="weekly limit" packages/claude_proxy_server/test/claude_proxy_server.test.ts` | Runs the tests whose names match the pattern. |
-| `pnpm typecheck` | Runs `tsc --noEmit` in both packages. There is no linter. |
+| `pnpm typecheck` | Runs `tsc --noEmit` in every package. There is no linter. |
+| `pnpm start:relay` | Runs the relay from `packages/claude_proxy_relay`. It listens on port 4100, like the proxy. |
 | `pnpm build` | Builds the web UI into `packages/claude_proxy_web_ui/dist` and the menu bar app into `macos/claude_proxy_menu_bar/build`. |
 | `pnpm dev:server` / `pnpm dev:web_ui` | Runs the proxy with `--watch`, or the Vite dev server with `/_proxy/api` sent to port 4100. |
 | `launchctl kickstart -k gui/$(id -u)/local.claude-proxy.server` | Restarts the installed proxy after a server change. Run `pnpm build` first if the web UI changed. |
@@ -66,6 +67,17 @@ After these checks, `claude_proxy_server.ts` sends the request to one of three h
 `~/.claude-proxy/subscription_accounts.yml` lists the accounts, the project routes and the default account. Each account can have its own `failover_utilization` (default 1, which means no threshold). A top-level `failover_utilization` is a validation error. `YamlConfigFile` reads it again at each change. After a parse or validation error, or when the file disappears, it keeps the last valid configuration and reports the error to the web UI. A file that is broken at start gives an empty configuration, so there is no routing.
 
 `SubscriptionAccountLoginHandler` logs in an account from the web UI with OAuth PKCE and the manual redirect URI `https://platform.claude.com/oauth/code/callback`. That page shows `<code>#<state>`. The user pastes it into the web UI, which posts it to `POST /_proxy/api/subscription-account-logins/finish`, and `finishLogin` splits it at the last `#`. `SubscriptionAccountStore` keeps the grants, the usage windows and the limit blocks in `requests.sqlite`. The proxy never reads, copies or refreshes Claude Code's own grant. `SubscriptionAccountUsageMonitor` polls `/api/oauth/usage` with each live grant every 5 minutes. A response to a route with a live grant updates the usage of its account from its headers. A response sent with Claude Code's own token updates nothing.
+
+## Relay
+
+`packages/claude_proxy_relay` runs on each machine that uses a central claude-proxy. It is Claude Code's `HTTPS_PROXY` on `127.0.0.1:4100`, and it uses only `node:http`, `node:https`, `node:net` and `node:fs`. It does not import from the server package, so it defines its own `claudeProxyTunnelPath` and `claudeProxyTunnelUpgradeToken` with the same values.
+
+- `main.ts` calls `readClaudeProxyRelayConfiguration`, which reads and trims `central_url` and `gateway_auth_token` from `CLAUDE_PROXY_RELAY_DIRECTORY` (default `~/.claude-proxy-relay`). It throws, and names the file, when a file is missing, when the URL is not `http:` or `https:`, or when `mode & 0o077` of the token file is not 0.
+- Every request to the central proxy carries `X-Gateway-Auth-Token` and the central Host, and no Origin. The relay never logs the token.
+- For `CONNECT api.anthropic.com:443`, `relayAnthropicApiConnection` sends `GET /_proxy/tunnel` with `Connection: Upgrade` and `Upgrade: claude-proxy-tunnel`, with `agent: false`. On a 101 it answers `200 Connection Established` and copies the bytes both ways. A `response` event, an `error` or `tunnelUpgradeTimeoutMilliseconds` (5000 in `main.ts`) gives a direct tunnel to `api.anthropic.com:443`. Through Caddy, a refused token gives a 302, so every answer other than 101 is a failure. `logFallback` logs at most one fallback a minute.
+- Every other CONNECT target gets a direct tunnel. A target that cannot be reached gets 502. Both tunnel kinds destroy both sockets when one closes.
+- The `connect` handler checks only for a loopback connection, because a CONNECT carries its target in the Host. Other requests need a loopback connection, the Host `127.0.0.1:<port>` or `localhost:<port>`, and no Origin or the relay's own (403 otherwise). Only `GET /_proxy/api/subscription-account-status` is served: it forwards the central answer on a 200, and gives 502 otherwise. Every other path gets 404.
+- At start, `downloadCertificateAuthority` gets `/_proxy/certificate_authority.pem`. It writes `certificate_authority.pem` through a temporary file and a rename, only for a 200 whose body starts with `-----BEGIN CERTIFICATE-----`. `close()` waits for the download.
 
 ## Facts checked against real Claude Code traffic
 

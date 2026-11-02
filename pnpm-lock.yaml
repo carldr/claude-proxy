@@ -8,6 +8,15 @@ importers:
 
   .: {}
 
+  packages/claude_proxy_relay:
+    devDependencies:
+      '@types/node':
+        specifier: ^24.9.1
+        version: 24.19.2
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
   packages/claude_proxy_server:
     dependencies:
       yaml:
