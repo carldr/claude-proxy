@@ -125,5 +125,5 @@ The relay needs Node.js 23.6 or later. The Roy hosts move to Node.js 26 before t
 - Relay: a fake central service that answers `101`, one that answers `302` and one that does not answer. The second and third make the relay tunnel directly.
 - Server: an upgrade to `/_proxy/tunnel` reaches the intercepted `api.anthropic.com` server. A request with the public Host is accepted, and one with another Host is refused.
 - Gateway Auth: a known token, an unknown token, no header with a cookie, and a token of another team.
-- A spike before the plan: Caddy on the cluster passes `Upgrade: claude-proxy-tunnel` and copies bytes both ways.
+- The spike of 2026-11-02 showed that the cluster's Caddy passes the upgrade. An echo server on docker-host:4100, behind the Moss proxy `claude-proxy-spike.example.com` with no CDN and no Gateway Auth, answered `101 Switching Protocols` with `Upgrade: claude-proxy-tunnel`. 1 MB of bytes came back through the tunnel. The proxy row had `streaming` off, so the tunnel does not need it. The spike did not cover Gateway Auth in front of the upgrade, because `/verify` does not read the token yet. The Gateway Auth tests do.
 
