@@ -27,6 +27,16 @@ final class SubscriptionAccountStatusModel: ObservableObject {
     /// The relay writes this file and needs its credential with the user name `relay`. The local proxy has no such file.
     static let relayProxyCredentialUrl = FileManager.default.homeDirectoryForCurrentUser
         .appending(path: ".claude-proxy-relay/proxy_credential")
+    /// The relay does not serve the web UI. With this file, the web UI is on the central service.
+    static let relayCentralUrlFileUrl = FileManager.default.homeDirectoryForCurrentUser
+        .appending(path: ".claude-proxy-relay/central_url")
+
+    /// The web UI of the central service when this machine has a relay, or else of the local proxy.
+    static func readWebUiUrl() -> URL {
+        let centralUrlText = (try? String(contentsOf: relayCentralUrlFileUrl, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return (URL(string: centralUrlText) ?? claudeProxyBaseUrl).appending(path: "_proxy/")
+    }
 
     @Published private(set) var subscriptionAccounts: [SubscriptionAccountStatus]?
     @Published private(set) var loadError: String?
@@ -141,7 +151,7 @@ struct SubscriptionAccountStatusMenu: View {
         }
         Divider()
         Button("Open web UI") {
-            NSWorkspace.shared.open(SubscriptionAccountStatusModel.claudeProxyBaseUrl.appending(path: "_proxy/"))
+            NSWorkspace.shared.open(SubscriptionAccountStatusModel.readWebUiUrl())
         }
         Button("Refresh now") {
             subscriptionAccountStatusModel.refresh()
