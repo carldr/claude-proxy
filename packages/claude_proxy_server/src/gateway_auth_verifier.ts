@@ -9,8 +9,8 @@ export interface GatewayAuthVerifierOptions {
 }
 
 /**
- * Asks Gateway Auth's `/verify` URL whether a request has a valid `X-Gateway-Auth-Token` or `gate_session` cookie.
- * Gateway Auth alone checks the token and the login. The verifier sends it only those two headers, and passes only on a 200.
+ * Asks Gateway Auth's `/verify` URL whether a request has a valid `Authorization: Bearer` token or `gate_session` cookie.
+ * Gateway Auth alone checks the token and the login. The verifier sends it only the `Authorization` header, when it holds a Bearer token, and the `Cookie` header, and passes only on a 200.
  * It never logs a token or a cookie.
  */
 export class GatewayAuthVerifier {
@@ -25,12 +25,13 @@ export class GatewayAuthVerifier {
   }
 
   async isVerified(requestHeaders: IncomingHttpHeaders): Promise<boolean> {
-    const gatewayAuthToken = readSingleHeaderValue(requestHeaders['x-gateway-auth-token']);
+    const authorizationHeader = readSingleHeaderValue(requestHeaders.authorization);
+    const gatewayAuthToken = authorizationHeader === null ? null : readBearerToken(authorizationHeader);
     const cookieHeader = readSingleHeaderValue(requestHeaders.cookie);
     const gateSession = cookieHeader === null ? null : readGateSessionCookie(cookieHeader);
-    // Gateway Auth checks the token when the header is present, and the cookie only without it. The cache key follows that order.
+    // Gateway Auth checks the bearer token when it is present, and the cookie only without it. The cache key follows that order.
     let credentialKey: string;
-    if (gatewayAuthToken !== null && gatewayAuthToken !== '') credentialKey = `x-gateway-auth-token:${sha256Hex(gatewayAuthToken)}`;
+    if (gatewayAuthToken !== null && gatewayAuthToken !== '') credentialKey = `bearer:${sha256Hex(gatewayAuthToken)}`;
     else if (gateSession !== null && gateSession !== '') credentialKey = `gate_session:${sha256Hex(gateSession)}`;
     else return false;
 
@@ -39,7 +40,7 @@ export class GatewayAuthVerifier {
     this.passExpiresAtByCredentialKey.delete(credentialKey);
 
     const verifyRequestHeaders: Record<string, string> = {};
-    if (gatewayAuthToken !== null) verifyRequestHeaders['x-gateway-auth-token'] = gatewayAuthToken;
+    if (authorizationHeader !== null && gatewayAuthToken !== null) verifyRequestHeaders.authorization = authorizationHeader;
     if (cookieHeader !== null) verifyRequestHeaders.cookie = cookieHeader;
     let verifyResponseStatus: number;
     try {
@@ -74,6 +75,12 @@ export class GatewayAuthVerifier {
 function readSingleHeaderValue(headerValue: string | string[] | undefined): string | null {
   if (headerValue === undefined) return null;
   return Array.isArray(headerValue) ? headerValue.join(', ') : headerValue;
+}
+
+/** Returns the token of an `Authorization: Bearer` header, or null for another scheme. The scheme is not case sensitive. */
+function readBearerToken(authorizationHeader: string): string | null {
+  const bearerMatch = /^Bearer[ \t]+(.*)$/i.exec(authorizationHeader);
+  return bearerMatch === null ? null : bearerMatch[1]!.trim();
 }
 
 /** Reads the `gate_session` cookie as Gateway Auth's `parseCookies` does: the pairs split at `;`, and the last pair wins. */

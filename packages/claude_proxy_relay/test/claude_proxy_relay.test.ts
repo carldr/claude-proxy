@@ -235,7 +235,7 @@ describe('claude_proxy_relay', () => {
     const upgradeRequest = fakeCentralService.receivedRequests.find((receivedRequest) => receivedRequest.path === '/_proxy/tunnel');
     assert.ok(upgradeRequest);
     assert.equal(upgradeRequest.method, 'GET');
-    assert.equal(upgradeRequest.headers['x-gateway-auth-token'], gatewayAuthToken);
+    assert.equal(upgradeRequest.headers.authorization, `Bearer ${gatewayAuthToken}`);
     assert.equal(upgradeRequest.headers.upgrade, 'claude-proxy-tunnel');
     assert.equal(upgradeRequest.headers.connection?.toLowerCase(), 'upgrade');
     assert.equal(upgradeRequest.headers.host, fakeCentralService.url.host);
@@ -309,7 +309,7 @@ describe('claude_proxy_relay', () => {
     assert.deepEqual({ statusCode: statusAnswer.statusCode, body: statusAnswer.body }, { statusCode: 200, body: subscriptionAccountStatusBody });
     const statusRequest = fakeCentralService.receivedRequests.find((receivedRequest) => receivedRequest.path === '/_proxy/api/subscription-account-status');
     assert.ok(statusRequest);
-    assert.equal(statusRequest.headers['x-gateway-auth-token'], gatewayAuthToken);
+    assert.equal(statusRequest.headers.authorization, `Bearer ${gatewayAuthToken}`);
     assert.equal(statusRequest.headers.host, fakeCentralService.url.host);
     assert.equal(statusRequest.headers.origin, undefined);
 
@@ -409,7 +409,7 @@ describe('claude_proxy_relay', () => {
     await claudeProxyRelay.close();
     assert.equal(fs.readFileSync(path.join(relayDirectory, 'certificate_authority.pem'), 'utf8'), certificateAuthorityPem);
     const certificateRequest = fakeCentralService.receivedRequests.find((receivedRequest) => receivedRequest.path === '/_proxy/certificate_authority.pem');
-    assert.equal(certificateRequest?.headers['x-gateway-auth-token'], gatewayAuthToken);
+    assert.equal(certificateRequest?.headers.authorization, `Bearer ${gatewayAuthToken}`);
     assert.deepEqual(fs.readdirSync(relayDirectory), ['certificate_authority.pem']);
   });
 

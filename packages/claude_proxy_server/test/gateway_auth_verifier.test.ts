@@ -22,10 +22,10 @@ describe('GatewayAuthVerifier', () => {
 
   /** Answers like Gateway Auth's `/verify`: 200 for the verified token or session, 401 otherwise. */
   function answerLikeGatewayAuth(receivedRequest: ReceivedVerifyRequest, verifyResponse: ServerResponse) {
-    const gatewayAuthToken = receivedRequest.headers['x-gateway-auth-token'];
+    const authorization = receivedRequest.headers.authorization;
     const isVerified =
-      gatewayAuthToken !== undefined
-        ? gatewayAuthToken === verifiedGatewayAuthToken
+      authorization !== undefined
+        ? authorization === `Bearer ${verifiedGatewayAuthToken}`
         : (receivedRequest.headers.cookie ?? '').split(';').findLast((cookiePair) => cookiePair.trim().startsWith('gate_session='))?.trim() ===
           `gate_session=${verifiedGateSession}`;
     verifyResponse.writeHead(isVerified ? 200 : 401, { 'content-type': 'application/json' });
@@ -62,14 +62,13 @@ describe('GatewayAuthVerifier', () => {
     return new GatewayAuthVerifier(new URL(`${fakeVerifyBaseUrl}${verifyPath}`), { cacheMilliseconds: 60_000, timeoutMilliseconds });
   }
 
-  test('sends the token and the cookie to the verify URL, and passes on a 200', async () => {
+  test('sends the bearer token and the cookie to the verify URL, and passes on a 200', async () => {
     const gatewayAuthVerifier = createVerifier();
     const cookieHeader = `theme=dark; gate_session=${verifiedGateSession}`;
     const isVerified = await gatewayAuthVerifier.isVerified({
       host: 'claude-proxy.example.test',
-      'x-gateway-auth-token': verifiedGatewayAuthToken,
+      authorization: `Bearer ${verifiedGatewayAuthToken}`,
       cookie: cookieHeader,
-      authorization: 'Bearer sk-ant-oat-client',
       'x-api-key': 'sk-client-key',
       origin: 'https://claude-proxy.example.test',
       'x-forwarded-for': '203.0.113.7',
@@ -78,17 +77,32 @@ describe('GatewayAuthVerifier', () => {
     assert.equal(receivedVerifyRequests.length, 1);
     const receivedHeaders = receivedVerifyRequests[0]!.headers;
     assert.equal(receivedVerifyRequests[0]!.path, '/verify?team_id=test-team');
-    assert.equal(receivedHeaders['x-gateway-auth-token'], verifiedGatewayAuthToken);
+    assert.equal(receivedHeaders.authorization, `Bearer ${verifiedGatewayAuthToken}`);
     assert.equal(receivedHeaders.cookie, cookieHeader);
     assert.equal(receivedHeaders.host, new URL(fakeVerifyBaseUrl).host);
     assert.deepEqual(
       Object.keys(receivedHeaders).filter((headerName) => !fetchOwnHeaderNames.includes(headerName)).sort(),
-      ['cookie', 'host', 'x-gateway-auth-token'],
+      ['authorization', 'cookie', 'host'],
     );
   });
 
+  test('refuses a non-Bearer authorization header alone, without calling the verify URL', async () => {
+    const gatewayAuthVerifier = createVerifier();
+    assert.equal(await gatewayAuthVerifier.isVerified({ authorization: `Basic ${verifiedGatewayAuthToken}` }), false);
+    assert.equal(await gatewayAuthVerifier.isVerified({ authorization: verifiedGatewayAuthToken }), false);
+    assert.equal(receivedVerifyRequests.length, 0);
+  });
+
+  test('does not forward a non-Bearer authorization header, and sends the cookie of a gate_session request', async () => {
+    const gatewayAuthVerifier = createVerifier();
+    const cookieHeader = `gate_session=${verifiedGateSession}`;
+    assert.equal(await gatewayAuthVerifier.isVerified({ authorization: 'Basic abc', cookie: cookieHeader }), true);
+    assert.equal(receivedVerifyRequests[0]!.headers.authorization, undefined);
+    assert.equal(receivedVerifyRequests[0]!.headers.cookie, cookieHeader);
+  });
+
   test('refuses on a 401, on a 302 and on no answer within the timeout', async () => {
-    const credentialHeaders = { 'x-gateway-auth-token': verifiedGatewayAuthToken };
+    const credentialHeaders = { authorization: `Bearer ${verifiedGatewayAuthToken}` };
     assert.equal(await createVerifier('/status-401').isVerified(credentialHeaders), false);
     assert.equal(await createVerifier('/status-302').isVerified(credentialHeaders), false);
     const startedAt = performance.now();
@@ -101,14 +115,15 @@ describe('GatewayAuthVerifier', () => {
     const gatewayAuthVerifier = createVerifier();
     assert.equal(await gatewayAuthVerifier.isVerified({}), false);
     assert.equal(await gatewayAuthVerifier.isVerified({ cookie: 'theme=dark; other_session=abc' }), false);
-    assert.equal(await gatewayAuthVerifier.isVerified({ 'x-gateway-auth-token': '' }), false);
+    assert.equal(await gatewayAuthVerifier.isVerified({ authorization: 'Bearer ' }), false);
+    assert.equal(await gatewayAuthVerifier.isVerified({ authorization: 'Basic dXNlcjpwYXNz' }), false);
     assert.equal(receivedVerifyRequests.length, 0);
   });
 
   test('keeps a pass for the cache time, keyed by the token or the gate_session cookie', async (testContext) => {
     testContext.mock.timers.enable({ apis: ['Date'], now: 1_000_000 });
     const gatewayAuthVerifier = createVerifier();
-    const tokenHeaders = { 'x-gateway-auth-token': verifiedGatewayAuthToken };
+    const tokenHeaders = { authorization: `Bearer ${verifiedGatewayAuthToken}` };
 
     assert.equal(await gatewayAuthVerifier.isVerified(tokenHeaders), true);
     testContext.mock.timers.tick(59_000);
@@ -118,9 +133,9 @@ describe('GatewayAuthVerifier', () => {
     assert.equal(await gatewayAuthVerifier.isVerified(tokenHeaders), true);
     assert.equal(receivedVerifyRequests.length, 2);
 
-    assert.equal(await gatewayAuthVerifier.isVerified({ 'x-gateway-auth-token': 'other-gateway-auth-token' }), false);
+    assert.equal(await gatewayAuthVerifier.isVerified({ authorization: 'Bearer other-gateway-auth-token' }), false);
     assert.equal(receivedVerifyRequests.length, 3);
-    assert.equal(await gatewayAuthVerifier.isVerified({ 'x-gateway-auth-token': 'other-gateway-auth-token' }), false);
+    assert.equal(await gatewayAuthVerifier.isVerified({ authorization: 'Bearer other-gateway-auth-token' }), false);
     assert.equal(receivedVerifyRequests.length, 4);
 
     const cookieHeaders = { cookie: `theme=dark; gate_session=${verifiedGateSession}` };
@@ -129,7 +144,7 @@ describe('GatewayAuthVerifier', () => {
     assert.equal(receivedVerifyRequests.length, 5);
 
     // A pass for a gate_session cookie does not pass a token with the same value.
-    assert.equal(await gatewayAuthVerifier.isVerified({ 'x-gateway-auth-token': verifiedGateSession }), false);
+    assert.equal(await gatewayAuthVerifier.isVerified({ authorization: `Bearer ${verifiedGateSession}` }), false);
     assert.equal(receivedVerifyRequests.length, 6);
   });
 

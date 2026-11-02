@@ -45,7 +45,7 @@ const connectRefusedResponseHead =
 export interface ClaudeProxyRelayOptions {
   /** The central claude-proxy behind Caddy and Gateway Auth, with an `http:` or `https:` scheme. */
   centralUrl: URL;
-  /** Sent as `X-Gateway-Auth-Token` on every request to the central claude-proxy. The relay never logs it. */
+  /** Sent as `Authorization: Bearer` on every request to the central claude-proxy. The relay never logs it. */
   gatewayAuthToken: string;
   /**
    * Every client sends this credential with the user name `relay`, so that another Unix user on this machine cannot use the relay.
@@ -176,7 +176,7 @@ function isAcceptedRelayRequest(clientRequest: IncomingMessage, httpServer: Serv
  */
 export function createClaudeProxyRelay(options: ClaudeProxyRelayOptions): ClaudeProxyRelay {
   const centralRequest = options.centralUrl.protocol === 'https:' ? https.request : http.request;
-  const centralRequestHeaders = { host: options.centralUrl.host, 'x-gateway-auth-token': options.gatewayAuthToken };
+  const centralRequestHeaders = { host: options.centralUrl.host, authorization: `Bearer ${options.gatewayAuthToken}` };
 
   const openSockets = new Set<Duplex>();
   const trackOpenSocket = (openSocket: Duplex) => {

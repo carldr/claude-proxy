@@ -43,7 +43,7 @@ const claudeCodeAuthorization = 'Bearer sk-ant-oat-test';
 const workAuthorization = 'Bearer work-token';
 const personalAuthorization = 'Bearer personal-token';
 const clientProjectPath = '/Users/example_user/Development/client_project';
-/** The only `X-Gateway-Auth-Token` that the fake Gateway Auth verifies. */
+/** The only bearer token that the fake Gateway Auth verifies. */
 const verifiedGatewayAuthToken = 'verified-gateway-auth-token';
 
 const claudeCodeRequestBody = {
@@ -264,7 +264,7 @@ describe('claude-proxy', () => {
     let gatewayAuthVerifyUrl: URL | null = null;
     if (publicHostname !== null) {
       const fakeGatewayAuth = await startFakeUpstream('gateway_auth', receivedGatewayAuthVerifyRequests, (receivedRequest, verifyResponse) =>
-        sendJsonResponse(verifyResponse, receivedRequest.headers['x-gateway-auth-token'] === verifiedGatewayAuthToken ? 200 : 401, {}),
+        sendJsonResponse(verifyResponse, receivedRequest.headers.authorization === `Bearer ${verifiedGatewayAuthToken}` ? 200 : 401, {}),
       );
       fakeUpstreamServers.push(fakeGatewayAuth.server);
       gatewayAuthVerifyUrl = new URL(`${fakeGatewayAuth.baseUrl}/verify?team_id=test-team`);
@@ -918,7 +918,7 @@ describe('claude-proxy', () => {
   describe('with a public hostname', () => {
     const publicHostname = 'claude-proxy.example.test';
 
-    const verifiedTokenHeaders = { 'x-gateway-auth-token': verifiedGatewayAuthToken };
+    const verifiedTokenHeaders = { authorization: `Bearer ${verifiedGatewayAuthToken}` };
 
     function sendWithHeaders(requestHeaders: Record<string, string>, requestPath = '/_proxy/api/subscription-account-status') {
       return new Promise<number>((resolve, reject) => {
@@ -961,14 +961,14 @@ describe('claude-proxy', () => {
       assert.equal(await sendWithHeaders({ host: publicHostname, cookie: 'theme=dark', ...verifiedTokenHeaders }), 200);
       assert.equal(receivedGatewayAuthVerifyRequests.length, 1);
       assert.equal(receivedGatewayAuthVerifyRequests[0]!.path, '/verify?team_id=test-team');
-      assert.equal(receivedGatewayAuthVerifyRequests[0]!.headers['x-gateway-auth-token'], verifiedGatewayAuthToken);
+      assert.equal(receivedGatewayAuthVerifyRequests[0]!.headers.authorization, `Bearer ${verifiedGatewayAuthToken}`);
       assert.equal(receivedGatewayAuthVerifyRequests[0]!.headers.cookie, 'theme=dark');
     });
 
     test('answers 401 to a public request that Gateway Auth refuses', async () => {
       await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}), subscriptionAccountsYaml, publicHostname);
-      assert.equal(await sendWithHeaders({ host: publicHostname, 'x-gateway-auth-token': 'unverified-gateway-auth-token' }), 401);
-      assert.equal(await sendWithHeaders({ host: publicHostname, 'x-gateway-auth-token': 'unverified-gateway-auth-token' }, '/v1/models'), 401);
+      assert.equal(await sendWithHeaders({ host: publicHostname, authorization: 'Bearer unverified-gateway-auth-token' }), 401);
+      assert.equal(await sendWithHeaders({ host: publicHostname, authorization: 'Bearer unverified-gateway-auth-token' }, '/v1/models'), 401);
       assert.equal(await sendWithHeaders({ host: publicHostname }), 401);
       assert.equal(receivedGatewayAuthVerifyRequests.length, 2);
       assert.equal(receivedRequests.length, 0);
@@ -1161,7 +1161,7 @@ describe('claude-proxy', () => {
             host: proxyUrl.hostname,
             port: proxyUrl.port,
             path: requestPath,
-            headers: { host: requestHost, connection: 'Upgrade', upgrade: upgradeToken, 'x-gateway-auth-token': gatewayAuthToken },
+            headers: { host: requestHost, connection: 'Upgrade', upgrade: upgradeToken, authorization: `Bearer ${gatewayAuthToken}` },
           })
           .on('upgrade', (upgradeResponse, tunnelSocket) =>
             resolve({ statusCode: upgradeResponse.statusCode ?? 0, headers: upgradeResponse.headers, tunnelSocket }),
@@ -1217,7 +1217,7 @@ describe('claude-proxy', () => {
       // Gateway Auth runs before the path and upgrade token checks.
       assert.equal((await sendTunnelUpgrade('/_proxy/other', 'websocket', publicHostname, 'unverified-gateway-auth-token')).statusCode, 401);
       assert.equal(receivedGatewayAuthVerifyRequests.length, 2);
-      assert.equal(receivedGatewayAuthVerifyRequests[0]!.headers['x-gateway-auth-token'], 'unverified-gateway-auth-token');
+      assert.equal(receivedGatewayAuthVerifyRequests[0]!.headers.authorization, 'Bearer unverified-gateway-auth-token');
       const verifiedUpgrade = await sendTunnelUpgrade('/_proxy/tunnel', 'claude-proxy-tunnel', publicHostname);
       assert.equal(verifiedUpgrade.statusCode, 101);
       verifiedUpgrade.tunnelSocket!.destroy();
@@ -1256,7 +1256,7 @@ describe('claude-proxy', () => {
     test('answers 404 to an upgrade whose request target is //, and keeps running', async () => {
       await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}), subscriptionAccountsYaml, publicHostname);
       const responseText = await sendRawRequest(
-        `GET // HTTP/1.1\r\nHost: ${publicHostname}\r\nX-Gateway-Auth-Token: ${verifiedGatewayAuthToken}\r\nConnection: Upgrade\r\nUpgrade: claude-proxy-tunnel\r\n\r\n`,
+        `GET // HTTP/1.1\r\nHost: ${publicHostname}\r\nAuthorization: Bearer ${verifiedGatewayAuthToken}\r\nConnection: Upgrade\r\nUpgrade: claude-proxy-tunnel\r\n\r\n`,
       );
       assert.match(responseText, /^HTTP\/1\.1 404 /);
       await assertServerStillAnswers();
@@ -1268,12 +1268,12 @@ describe('claude-proxy', () => {
         `GET /_proxy/tunnel HTTP/1.1\r\nHost: other.example.test\r\nConnection: Upgrade\r\nUpgrade: claude-proxy-tunnel\r\n\r\n`,
       );
       await sendRawRequestAndReset(
-        `GET /_proxy/other HTTP/1.1\r\nHost: ${publicHostname}\r\nX-Gateway-Auth-Token: ${verifiedGatewayAuthToken}\r\nConnection: Upgrade\r\nUpgrade: claude-proxy-tunnel\r\n\r\n`,
+        `GET /_proxy/other HTTP/1.1\r\nHost: ${publicHostname}\r\nAuthorization: Bearer ${verifiedGatewayAuthToken}\r\nConnection: Upgrade\r\nUpgrade: claude-proxy-tunnel\r\n\r\n`,
       );
       // The client resets the socket while the proxy waits for Gateway Auth.
       for (const gatewayAuthToken of [verifiedGatewayAuthToken, 'unverified-gateway-auth-token']) {
         await sendRawRequestAndReset(
-          `GET /_proxy/tunnel HTTP/1.1\r\nHost: ${publicHostname}\r\nX-Gateway-Auth-Token: ${gatewayAuthToken}\r\nConnection: Upgrade\r\nUpgrade: claude-proxy-tunnel\r\n\r\n`,
+          `GET /_proxy/tunnel HTTP/1.1\r\nHost: ${publicHostname}\r\nAuthorization: Bearer ${gatewayAuthToken}\r\nConnection: Upgrade\r\nUpgrade: claude-proxy-tunnel\r\n\r\n`,
         );
       }
       await assertServerStillAnswers();

@@ -4,7 +4,7 @@
 
 **Goal:** Run one claude-proxy at `https://claude-proxy.example.com` behind Gateway Auth, and send the Claude Code traffic of every machine of the user to it through a local relay.
 
-**Architecture:** The relay listens on `127.0.0.1:4100` on each machine and is Claude Code's `HTTPS_PROXY`. For `CONNECT api.anthropic.com:443` it opens an HTTP upgrade (`Upgrade: claude-proxy-tunnel`) to the central service, with `X-Gateway-Auth-Token`, and falls back to a direct TCP tunnel when the upgrade fails. The central server decrypts the tunnel with its own CA and handles it as it handles a `CONNECT` today. Gateway Auth's `/verify` accepts the token, found by its SHA-256 in a team pref.
+**Architecture:** The relay listens on `127.0.0.1:4100` on each machine and is Claude Code's `HTTPS_PROXY`. For `CONNECT api.anthropic.com:443` it opens an HTTP upgrade (`Upgrade: claude-proxy-tunnel`) to the central service, with `Authorization: Bearer`, and falls back to a direct TCP tunnel when the upgrade fails. The central server decrypts the tunnel with its own CA and handles it as it handles a `CONNECT` today. Gateway Auth's `/verify` accepts the token, found by its SHA-256 in a team pref.
 
 **Tech Stack:** Node.js 26 with TypeScript type stripping, `node:test`, `node:sqlite`, openssl, Docker Compose, Caddy (Moss), Appwrite function (Gateway Auth), Appwrite CLI.
 
@@ -16,7 +16,7 @@
 - The server code follows claude-proxy's `CLAUDE.md`: TypeScript type stripping, `erasableSyntaxOnly`, `.ts` imports, `import type`, no new npm packages.
 - Names say the whole thing they are (user rule): `gatewayAuthToken`, not `token`.
 - Comments and docs use ASD-STE100. Each task updates `README.md` and `CLAUDE.md` where its behaviour shows.
-- Central URL: `https://claude-proxy.example.com`. Tunnel path: `/_proxy/tunnel`. Upgrade token: `claude-proxy-tunnel`. Header: `X-Gateway-Auth-Token`.
+- Central URL: `https://claude-proxy.example.com`. Tunnel path: `/_proxy/tunnel`. Upgrade token: `claude-proxy-tunnel`. Header: `Authorization: Bearer <token>`.
 - The relay listens on `127.0.0.1:4100`. Its directory is `~/.claude-proxy-relay/`, with `central_url`, `gateway_auth_token` (both mode 600) and `certificate_authority.pem`.
 - The central service tunnels only to `api.anthropic.com:443`. With a public hostname set, the server refuses every `CONNECT`.
 - The CA permits only the name `api.anthropic.com`. Its key never leaves the central volume.
@@ -178,7 +178,7 @@ Ruling: every install uses the manual redirect URI, so there is one login flow. 
 - Produces: `createClaudeProxyRelay(options: ClaudeProxyRelayOptions): { httpServer: http.Server; close(): Promise<void> }` with `ClaudeProxyRelayOptions = { centralUrl: URL; gatewayAuthToken: string; relayDirectory: string; anthropicApiHost: string; anthropicApiPort: number; tunnelUpgradeTimeoutMilliseconds: number }`. `main.ts` reads `central_url` and `gateway_auth_token` from `CLAUDE_PROXY_RELAY_DIRECTORY` (default `~/.claude-proxy-relay`), listens on `127.0.0.1:${CLAUDE_PROXY_RELAY_PORT ?? 4100}`, uses `api.anthropic.com:443` and a 5000 ms timeout, and refuses to start when either file is missing or readable by others.
 
 - [ ] **Step 1: Write the failing tests,** each with fake servers on loopback ports. The fake central is an `http.Server` (the relay accepts `http:` and `https:` central URLs).
-  - `sends an api.anthropic.com CONNECT through the central tunnel with the token`: the fake central answers `101` and echoes. Expect `200 Connection Established`, the echoed bytes, and `x-gateway-auth-token` and `upgrade: claude-proxy-tunnel` on the fake central's request.
+  - `sends an api.anthropic.com CONNECT through the central tunnel with the token`: the fake central answers `101` and echoes. Expect `200 Connection Established`, the echoed bytes, and `authorization: Bearer <token>` and `upgrade: claude-proxy-tunnel` on the fake central's request.
   - `falls back to a direct tunnel when the central service answers without 101`: the fake central answers `302`. Expect `200` and bytes from the fake Anthropic server.
   - `falls back to a direct tunnel when the central service does not answer within 5 seconds`: the fake central accepts TCP and writes nothing. With `tunnelUpgradeTimeoutMilliseconds: 200`, expect the direct tunnel within 1 second.
   - `tunnels another host from this machine`: `CONNECT 127.0.0.1:<port>` reaches that port, and the fake central gets no request.
@@ -217,7 +217,7 @@ Ruling: every install uses the manual redirect URI, so there is one login flow. 
 - [ ] **Step 1: Write the failing tests** of `findGatewayAuthTokenName`: a known token gives its name; an unknown token gives null; missing or broken `gateway_auth_tokens` gives null; an empty token gives null. The comparison uses `crypto.timingSafeEqual`.
 - [ ] **Step 2: Run** `pnpm --filter gateway-auth test`. Expected: FAIL.
 - [ ] **Step 3: Implement.**
-  - In `/verify`, a request with `x-gateway-auth-token` reads the team with `serverTeams.get(teamId)`. A match answers 200 `{ name }`, and no match answers 401. A request without the header runs the cookie check unchanged.
+  - In `/verify`, a request with `Authorization: Bearer` reads the team with `serverTeams.get(teamId)`. A match answers 200 `{ name }`, and no match answers 401. A request without the header runs the cookie check unchanged.
   - The script runs the `appwrite` CLI with a temporary `appwrite.config.json` for project `<project ID>` at `https://appwrite.example.com/v1`. It finds the team ID by its exact name, reads the prefs, changes `gateway_auth_tokens`, and writes all the prefs back. `add` prints the new token once (32 random bytes, base64url) and refuses a name that exists.
 - [ ] **Step 4: Run** `pnpm --filter gateway-auth test`, `lint` and `typecheck`. Expected: all pass.
 - [ ] **Step 5: Update** `functions/gateway-auth/README.md` with the header and the script, then commit. A push to `master` deploys the function (`functions/README.md`), so the push happens in Task 12.
@@ -244,7 +244,7 @@ Runs after Task 5 and before Task 6. Task 7's compose file and Task 12 use its s
 - Produces: `class GatewayAuthVerifier` with `constructor(gatewayAuthVerifyUrl: URL, options: { cacheMilliseconds: number; timeoutMilliseconds: number })` and `isVerified(requestHeaders: IncomingHttpHeaders): Promise<boolean>`. `ClaudeProxyServerOptions.gatewayAuthVerifyUrl: URL | null`. Environment variable `CLAUDE_PROXY_GATEWAY_AUTH_VERIFY_URL`. Values: cache 60 000 ms, timeout 5000 ms.
 
 - [ ] **Step 1: Write the failing tests** of `GatewayAuthVerifier`, against a fake verify server on loopback:
-  - `sends the token and the cookie to the verify URL, and passes on a 200`: the fake server receives `x-gateway-auth-token` and `cookie` unchanged, and no other request header but `host`.
+  - `sends the token and the cookie to the verify URL, and passes on a 200`: the fake server receives `authorization: Bearer <token>` and `cookie` unchanged, and no other request header but `host`.
   - `refuses on a 401, on a 302 and on no answer within the timeout`: each gives `false`; the no-answer case with `timeoutMilliseconds: 200` returns within 1 second.
   - `refuses a request without a token or a gate_session cookie, without calling the verify URL`.
   - `keeps a pass for the cache time, keyed by the token or the gate_session cookie`: two calls with the same token within the cache time make one verify request; after the cache time (`mock.timers` on `Date`), a third call makes a second request. A different token makes its own request. A refusal is not kept.

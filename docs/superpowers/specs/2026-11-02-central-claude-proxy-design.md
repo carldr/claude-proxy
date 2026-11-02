@@ -12,7 +12,7 @@ claude-proxy stays a private tool of one user. Anyone can set it up from the pub
 
 1. Claude Code on the first Mac, the second Mac and every Roy host sends `api.anthropic.com` traffic through the central claude-proxy. Remote Control stays on.
 2. Any machine with an outgoing HTTPS connection can use it. The machine needs no Tailscale access, no VPN and no firewall rule. A Roy VM, which reaches only the internet, can use it.
-3. Gateway Auth protects the service. A browser logs in with the cookie, as today. The relay and the menu bar send a token in `X-Gateway-Auth-Token`.
+3. Gateway Auth protects the service. A browser logs in with the cookie, as today. The relay and the menu bar send a token in `Authorization: Bearer`. Caddy redacts `Authorization` in its logs, and it writes other unknown headers to its error log, where a token leaked.
 4. When the central claude-proxy does not answer, Claude Code connects to `api.anthropic.com` directly.
 5. The history in `~/.claude-proxy/requests.sqlite` on the first Mac moves to the central service. A few minutes of records can be lost during the cut-over.
 
@@ -47,7 +47,7 @@ Claude Code ──CONNECT──▶ relay (127.0.0.1:4100) ──HTTPS upgrade─
 
 - The relay is a new package in this repository, `packages/claude_proxy_relay`. It is Node.js with TypeScript type stripping, like the server.
 - It listens on `127.0.0.1:4100`. The zsh function and the menu bar keep that address.
-- For `CONNECT api.anthropic.com:443`, it sends `GET /_proxy/tunnel` to `https://claude-proxy.example.com` with `Connection: Upgrade`, `Upgrade: claude-proxy-tunnel` and `X-Gateway-Auth-Token`. After a `101`, it answers Claude Code with `200 Connection Established` and copies bytes both ways.
+- For `CONNECT api.anthropic.com:443`, it sends `GET /_proxy/tunnel` to `https://claude-proxy.example.com` with `Connection: Upgrade`, `Upgrade: claude-proxy-tunnel` and `Authorization: Bearer <token>`. After a `101`, it answers Claude Code with `200 Connection Established` and copies bytes both ways.
 - When the upgrade fails, for any reason, the relay opens a TCP connection to `api.anthropic.com:443` itself and tunnels to it. Claude Code then talks to Anthropic directly, with Anthropic's own certificate. Goal 4 needs no check in the zsh function.
 - For `CONNECT` to any other host, the relay opens the TCP tunnel from the local machine. Other traffic never reaches the central service, so `NO_PROXY` needs no internal hosts.
 - `GET /_proxy/api/subscription-account-status` on the relay forwards to the central service with the token. The menu bar keeps its URL and needs no token. The zsh function keeps its check of that path.
@@ -66,7 +66,7 @@ Claude Code ──CONNECT──▶ relay (127.0.0.1:4100) ──HTTPS upgrade─
 - The `CONNECT` listener stays for a local install. A public install does not need it.
 - The container publishes port 4100 on docker-host. The cluster's hosts, and every other container on docker-host, can connect to that port without Caddy, so Gateway Auth never sees their requests. claude-proxy therefore asks Gateway Auth itself:
   - New setting `CLAUDE_PROXY_GATEWAY_AUTH_VERIFY_URL`: the `/verify?team_id=<id of gateway-auth-claude-proxy>` URL of the Gateway Auth function, the same URL that Caddy's `forward_auth` calls. A server with a public hostname refuses to start without it.
-  - For each request to the public hostname, claude-proxy sends that URL the request's `X-Gateway-Auth-Token` and `Cookie` headers. A 200 serves the request. Any other answer, or no answer within 5 seconds, gives 401.
+  - For each request to the public hostname, claude-proxy sends that URL the request's `Authorization` (Bearer only) and `Cookie` headers. A 200 serves the request. Any other answer, or no answer within 5 seconds, gives 401.
   - claude-proxy keeps a 200 for 60 seconds, keyed by the SHA-256 of the token or of the `gate_session` cookie.
   - claude-proxy accepts a loopback Host only from a loopback connection, which is the container's own healthcheck.
   - Gateway Auth stays the only thing that checks a token or a login. No new secret exists.
@@ -92,7 +92,7 @@ The central service has no home directory of the user, and the machines have dif
 
 The function is `functions/gateway-auth` in gateway-auth-repository.
 
-- `/verify` reads `X-Gateway-Auth-Token`. When the header is present, the function hashes the token with SHA-256. It looks for the hash in the team pref `gateway_auth_tokens` of the team in `team_id`. A match returns 200 with the token's name. No match returns 401. Without the header, the cookie check runs as today.
+- `/verify` reads `Authorization: Bearer`. When the header is present, the function hashes the token with SHA-256. It looks for the hash in the team pref `gateway_auth_tokens` of the team in `team_id`. A match returns 200 with the token's name. No match returns 401. Without the header, the cookie check runs as today.
 - The pref is a JSON string, like `allowed_domains`: a list of `{ "name", "sha256", "created_at" }`.
 - A script in `functions/gateway-auth` manages the tokens through the Appwrite CLI and the user's console login. It takes the team name and finds the team ID itself.
   - `add <team-name> <token-name>` prints a new token once and stores its hash.

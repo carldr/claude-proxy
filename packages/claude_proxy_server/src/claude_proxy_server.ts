@@ -278,7 +278,7 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
     }
     if (!(await isVerifiedByGatewayAuth(clientRequest))) {
       clientResponse.writeHead(401, { 'content-type': 'text/plain' });
-      clientResponse.end(`claude-proxy needs a Gateway Auth login or X-Gateway-Auth-Token for requests addressed to ${options.publicHostname}.`);
+      clientResponse.end(`claude-proxy needs a Gateway Auth login or Authorization: Bearer token for requests addressed to ${options.publicHostname}.`);
       return;
     }
     if (clientRequest.method === 'GET' && requestPath === certificateAuthorityPath) {
@@ -364,7 +364,7 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
         // The client can close the socket while the proxy waits for Gateway Auth.
         if (clientSocket.destroyed) return;
         if (!isVerified) {
-          refuseUpgrade('401 Unauthorized', `claude-proxy needs a Gateway Auth login or X-Gateway-Auth-Token for requests addressed to ${options.publicHostname}.`);
+          refuseUpgrade('401 Unauthorized', `claude-proxy needs a Gateway Auth login or Authorization: Bearer token for requests addressed to ${options.publicHostname}.`);
         } else if ((upgradeRequest.url ?? '').split('?')[0] !== claudeProxyTunnelPath) {
           refuseUpgrade('404 Not Found', `claude-proxy upgrades only ${claudeProxyTunnelPath}.`);
         } else if (upgradeRequest.headers.upgrade?.toLowerCase() !== claudeProxyTunnelUpgradeToken) {
