@@ -86,11 +86,22 @@ function isLoopbackAddress(remoteAddress: string | undefined): boolean {
 }
 
 /**
+ * Throws when the proxy would listen on a non-loopback address without a public hostname.
+ * Such a proxy has no Gateway Auth, so only a loopback listen address is safe.
+ */
+export function assertListenAddressNeedsPublicHostname(listenAddress: string, publicHostname: string | null): void {
+  if (publicHostname !== null) return;
+  if (listenAddress === 'localhost' || isLoopbackAddress(listenAddress)) return;
+  throw new Error(`CLAUDE_PROXY_LISTEN_ADDRESS is ${listenAddress}, which is not a loopback address. Set CLAUDE_PROXY_PUBLIC_HOSTNAME and CLAUDE_PROXY_GATEWAY_AUTH_VERIFY_URL, or listen on 127.0.0.1.`);
+}
+
+/**
  * Accepts a request only when its Host is 127.0.0.1 or localhost on the proxy's port, and when it has no Origin
  * or the proxy's own Origin. When `publicHostname` is set, it also accepts that Host without a port, with no Origin
  * or the Origin `https://<publicHostname>`. This stops web pages, including pages that use DNS rebinding, from reading recorded
  * requests or from sending requests that the proxy would send with a subscription account's grant. Claude Code sends no Origin header.
- * When `publicHostname` is set, a loopback Host also needs a loopback connection, because a loopback Host needs no Gateway Auth.
+ * A loopback Host also needs a loopback connection, because a loopback Host needs no Gateway Auth.
+ * Without this, a proxy that listens on a non-loopback address would give any client the web API and the proxy.
  */
 export function isAcceptedRequest(clientRequest: IncomingMessage, httpServer: Server, publicHostname: string | null): boolean {
   const proxyPort = (httpServer.address() as AddressInfo).port;
@@ -98,7 +109,7 @@ export function isAcceptedRequest(clientRequest: IncomingMessage, httpServer: Se
   const origin = clientRequest.headers.origin;
   const requestHost = clientRequest.headers.host ?? '';
   if (localHosts.includes(requestHost)) {
-    if (publicHostname !== null && !isLoopbackAddress(clientRequest.socket.remoteAddress)) return false;
+    if (!isLoopbackAddress(clientRequest.socket.remoteAddress)) return false;
     return origin === undefined || localHosts.some((localHost) => origin === `http://${localHost}`);
   }
   return publicHostname !== null && requestHost === publicHostname && (origin === undefined || origin === `https://${publicHostname}`);

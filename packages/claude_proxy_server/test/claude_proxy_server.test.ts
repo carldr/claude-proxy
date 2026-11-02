@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, mock, test } from 'node:test';
 import tls from 'node:tls';
-import { createClaudeProxyServer, isAcceptedRequest, makeClaudeProxyFilePrivate, type ClaudeProxyServer } from '../src/claude_proxy_server.ts';
+import { assertListenAddressNeedsPublicHostname, createClaudeProxyServer, isAcceptedRequest, makeClaudeProxyFilePrivate, type ClaudeProxyServer } from '../src/claude_proxy_server.ts';
 import { parseSubscriptionAccountUsageReport } from '../src/subscription_account_usage_monitor.ts';
 
 interface ReceivedUpstreamRequest {
@@ -990,6 +990,24 @@ describe('claude-proxy', () => {
       // A loopback request needs no Gateway Auth.
       assert.equal(await sendWithHeaders({}), 200);
       assert.equal(receivedGatewayAuthVerifyRequests.length, 0);
+    });
+
+    test('refuses a loopback Host from a non-loopback connection on a server without a public hostname', async () => {
+      await startProxy((_, upstreamResponse) => sendJsonResponse(upstreamResponse, 200, {}));
+      const proxyPort = (claudeProxyServer.httpServer.address() as AddressInfo).port;
+      const requestFrom = (remoteAddress: string, requestHost: string) =>
+        ({ headers: { host: requestHost }, socket: { remoteAddress } }) as unknown as http.IncomingMessage;
+      assert.equal(isAcceptedRequest(requestFrom('172.17.0.5', `127.0.0.1:${proxyPort}`), claudeProxyServer.httpServer, null), false);
+      assert.equal(isAcceptedRequest(requestFrom('::ffff:172.17.0.5', `localhost:${proxyPort}`), claudeProxyServer.httpServer, null), false);
+      assert.equal(isAcceptedRequest(requestFrom('127.0.0.1', `127.0.0.1:${proxyPort}`), claudeProxyServer.httpServer, null), true);
+      assert.equal(isAcceptedRequest(requestFrom('::1', `localhost:${proxyPort}`), claudeProxyServer.httpServer, null), true);
+    });
+
+    test('refuses to listen on a non-loopback address without a public hostname', () => {
+      assert.throws(() => assertListenAddressNeedsPublicHostname('0.0.0.0', null), /CLAUDE_PROXY_LISTEN_ADDRESS.*CLAUDE_PROXY_PUBLIC_HOSTNAME/);
+      assert.doesNotThrow(() => assertListenAddressNeedsPublicHostname('127.0.0.1', null));
+      assert.doesNotThrow(() => assertListenAddressNeedsPublicHostname('::1', null));
+      assert.doesNotThrow(() => assertListenAddressNeedsPublicHostname('0.0.0.0', 'claude-proxy.example.test'));
     });
 
     test('refuses to start with a public hostname and no Gateway Auth verify URL', async () => {

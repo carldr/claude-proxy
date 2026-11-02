@@ -1,11 +1,13 @@
 import os from 'node:os';
 import path from 'node:path';
-import { createClaudeProxyServer } from './claude_proxy_server.ts';
+import { assertListenAddressNeedsPublicHostname, createClaudeProxyServer } from './claude_proxy_server.ts';
 import { anthropicOAuthEndpoints } from './subscription_account_oauth.ts';
 
 const claudeProxyPort = Number(process.env.CLAUDE_PROXY_PORT ?? 4100);
 
 const claudeProxyListenAddress = process.env.CLAUDE_PROXY_LISTEN_ADDRESS ?? '127.0.0.1';
+
+assertListenAddressNeedsPublicHostname(claudeProxyListenAddress, process.env.CLAUDE_PROXY_PUBLIC_HOSTNAME || null);
 
 const claudeProxyServer = createClaudeProxyServer({
   claudeProxyDirectory: process.env.CLAUDE_PROXY_DIRECTORY ?? path.join(os.homedir(), '.claude-proxy'),
