@@ -100,6 +100,32 @@ describe('create_certificate_authority.sh', () => {
     assert.match(`${(clientError as NodeJS.ErrnoException).code} ${clientError.message}`, /NAME_CONSTRAINT|permitted/);
   });
 
+  for (const ipAddress of ['10.0.0.5', '2001:db8::5']) {
+    test(`makes a CA that cannot sign the IP address ${ipAddress}`, () => {
+      assert.equal(runCreateCertificateAuthorityScript().status, 0);
+      const ipAddressDirectory = fs.mkdtempSync(path.join(claudeProxyDirectory, 'ip_address_'));
+      const ipAddressPath = (fileName: string) => path.join(ipAddressDirectory, fileName);
+      const caPath = (fileName: string) => path.join(claudeProxyDirectory, fileName);
+      fs.writeFileSync(ipAddressPath('extensions.cnf'), `subjectAltName=IP:${ipAddress}\nextendedKeyUsage=serverAuth\n`);
+      execFileSync('openssl', ['ecparam', '-name', 'prime256v1', '-genkey', '-noout', '-out', ipAddressPath('key.pem')]);
+      execFileSync('openssl', ['req', '-new', '-key', ipAddressPath('key.pem'), '-subj', '/CN=ip-address', '-out', ipAddressPath('request.pem')]);
+      execFileSync('openssl', [
+        'x509', '-req', '-in', ipAddressPath('request.pem'), '-CA', caPath('certificate_authority.pem'),
+        '-CAkey', caPath('certificate_authority-key.pem'), '-CAcreateserial', '-days', '1',
+        '-extfile', ipAddressPath('extensions.cnf'), '-out', ipAddressPath('certificate.pem'),
+      ], { stdio: 'ignore' });
+
+      const verification = spawnSync(
+        'openssl',
+        ['verify', '-CAfile', caPath('certificate_authority.pem'), '-verify_ip', ipAddress, ipAddressPath('certificate.pem')],
+        { encoding: 'utf8' },
+      );
+
+      assert.notEqual(verification.status, 0, verification.stdout);
+      assert.match(`${verification.stdout} ${verification.stderr}`, /excluded/);
+    });
+  }
+
   test('refuses to replace an existing CA', () => {
     assert.equal(runCreateCertificateAuthorityScript().status, 0);
     const fileNames = ['certificate_authority.pem', 'certificate_authority-key.pem', 'api.anthropic.com.pem', 'api.anthropic.com-key.pem'];

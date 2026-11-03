@@ -1,7 +1,7 @@
 #!/bin/sh
 # Makes the claude-proxy certificate authority and the api.anthropic.com certificate that the proxy uses to decrypt Claude Code traffic.
 # Usage: sh scripts/create_certificate_authority.sh <directory>
-# The certificate authority can sign only api.anthropic.com. It has a name constraint, so a stolen key cannot impersonate another site.
+# The name constraint of the certificate authority permits the host name api.anthropic.com and excludes every IP address, so a stolen key cannot impersonate another HTTPS site.
 # The script refuses to replace an existing certificate authority, because every machine that trusts it would need the new one.
 set -eu
 
@@ -33,7 +33,7 @@ CN = claude-proxy certificate authority for api.anthropic.com
 [certificate_authority_extensions]
 basicConstraints = critical,CA:true,pathlen:0
 keyUsage = critical,keyCertSign,cRLSign
-nameConstraints = critical,permitted;DNS:api.anthropic.com
+nameConstraints = critical,permitted;DNS:api.anthropic.com,excluded;IP:0.0.0.0/0.0.0.0,excluded;IP:::/0
 subjectKeyIdentifier = hash
 CONFIG
 
