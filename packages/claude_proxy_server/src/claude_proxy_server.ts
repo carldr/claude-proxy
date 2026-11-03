@@ -227,7 +227,9 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
     const { config, loadError } = subscriptionAccountsConfigFile.read();
     if (config !== configOfAppliedProjectNames && loadError === null) {
       configOfAppliedProjectNames = config;
-      const changedRequestCount = requestDatabase.applyProjectNames((projectPath) => findProjectName(config.projectNameRules, projectPath));
+      const changedRequestCount = requestDatabase.applyProjectNames((projectPath, clientProjectName) =>
+        findProjectName(config.projectNameRules, projectPath, clientProjectName),
+      );
       if (changedRequestCount > 0) console.log(`Wrote the project name of ${changedRequestCount} requests.`);
     }
     return config;

@@ -252,7 +252,8 @@ project_names:
 - In a pattern, `*` matches inside one directory, and `{project_name}` matches one directory and names the project. A pattern without `{project_name}` needs a `project_name` key.
 - A pattern also matches every subdirectory of a match. The first matching rule wins.
 - The proxy ignores `.claude/worktrees/<name>` and `.worktrees/<name>` in a path before it applies the rules.
-- Without a match, the last directory of the path is the name.
+- Without a match, the name is the value of the `X-Claude-Proxy-Project` request header. The proxy does not forward this header. To send it, set `ANTHROPIC_CUSTOM_HEADERS="X-Claude-Proxy-Project: <name>"` for Claude Code.
+- Without a header, the last directory of the path is the name.
 
 The proxy stores the name in the `project_name` column of each request. When the rules change, the proxy writes the new names to all stored requests. It does not serve requests during this write, which takes about 13 seconds for 80,000 requests that all change. `project_path` does not change, because `claude --resume` and `project_routes` read it.
 

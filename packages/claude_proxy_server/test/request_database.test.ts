@@ -57,6 +57,7 @@ function startedRequest(requestBody: Buffer, startedAt = new Date().toISOString(
     isStreaming: true,
     sessionId: 'session-1',
     projectPath: '/Users/test/project',
+    clientProjectName: null,
     previousUpstreamRequestId: null,
     requestHeadersJson: '{"user-agent":"claude-cli"}',
     requestBody,

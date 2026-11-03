@@ -1,12 +1,15 @@
 import { createHash } from 'node:crypto';
-import path from 'node:path';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 import { extractClaudeCodeRequestContext } from './claude_code_request_context.ts';
+import { findProjectName } from './project_name_rules.ts';
 
 /** A `subscription` route forwards Claude Code's own token. Only rows from earlier versions of the proxy have `api_key`. */
 export type RouteKind = 'subscription_account' | 'subscription' | 'api_key' | 'passthrough';
 export type ClientAuthKind = 'oauth' | 'api_key' | 'none';
+
+/** Names the project of a request from its project path and the name that its client sends. */
+export type ProjectNameFinder = (projectPath: string | null, clientProjectName: string | null) => string | null;
 
 export interface StartedProxiedRequest {
   startedAt: string;
@@ -18,6 +21,8 @@ export interface StartedProxiedRequest {
   sessionId: string | null;
   /** Null when the request carries no environment block. The database then finds the project with `previousUpstreamRequestId` or the session. */
   projectPath: string | null;
+  /** The value of the `X-Claude-Proxy-Project` header. Null when the client does not send it. */
+  clientProjectName: string | null;
   previousUpstreamRequestId: string | null;
   requestHeadersJson: string;
   requestBody: Buffer;
@@ -124,7 +129,7 @@ export class RequestDatabase {
   private readonly searchTextOfOpenRequests = new Map<number, { userText: string; toolText: string }>();
 
   /** Names the project of a new request. `applyProjectNames` replaces this function. */
-  private findProjectName: (projectPath: string) => string = (projectPath) => path.basename(projectPath);
+  private findProjectName: ProjectNameFinder = (projectPath, clientProjectName) => findProjectName([], projectPath, clientProjectName);
 
   constructor(databasePath: string) {
     this.database = new DatabaseSync(databasePath);
@@ -219,6 +224,7 @@ export class RequestDatabase {
       ['user_text_preview', 'TEXT'],
       ['contents_expired_at', 'TEXT'],
       ['project_name', 'TEXT'],
+      ['client_project_name', 'TEXT'],
     ]) {
       this.addMissingColumn('proxied_requests', columnName, columnType);
     }
@@ -572,9 +578,9 @@ export class RequestDatabase {
       const insertResult = this.database
         .prepare(
           `INSERT INTO proxied_requests (
-            started_at, http_method, request_path, client_auth_kind, model, is_streaming, session_id, project_path, project_name,
+            started_at, http_method, request_path, client_auth_kind, model, is_streaming, session_id, project_path, client_project_name, project_name,
             is_project_path_inherited, request_headers_json_zstd, request_body_zstd, request_body_layout_zstd, user_text_preview
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           startedRequest.startedAt,
@@ -585,7 +591,8 @@ export class RequestDatabase {
           startedRequest.isStreaming ? 1 : 0,
           startedRequest.sessionId,
           projectPathAssignment.projectPath,
-          projectPathAssignment.projectPath === null ? null : this.findProjectName(projectPathAssignment.projectPath),
+          startedRequest.clientProjectName,
+          this.findProjectName(projectPathAssignment.projectPath, startedRequest.clientProjectName),
           projectPathAssignment.isProjectPathInherited ? 1 : 0,
           compressText(startedRequest.requestHeadersJson),
           wholeRequestBody,
@@ -747,20 +754,20 @@ export class RequestDatabase {
    * `project_path` does not change, because `claude --resume` and the project routes read it.
    * Returns the number of requests that changed.
    */
-  applyProjectNames(findProjectName: (projectPath: string) => string): number {
-    this.findProjectName = findProjectName;
-    const projectPathRows = this.database
-      .prepare('SELECT DISTINCT project_path FROM proxied_requests WHERE project_path IS NOT NULL')
-      .all() as Array<{ project_path: string }>;
+  applyProjectNames(projectNameFinder: ProjectNameFinder): number {
+    this.findProjectName = projectNameFinder;
+    const projectRows = this.database
+      .prepare('SELECT DISTINCT project_path, client_project_name FROM proxied_requests')
+      .all() as Array<{ project_path: string | null; client_project_name: string | null }>;
     const updateProjectName = this.database.prepare(
-      'UPDATE proxied_requests SET project_name = ? WHERE project_path = ? AND project_name IS NOT ?',
+      'UPDATE proxied_requests SET project_name = ? WHERE project_path IS ? AND client_project_name IS ? AND project_name IS NOT ?',
     );
     let changedRequestCount = 0;
     this.database.exec('BEGIN');
     try {
-      for (const { project_path: projectPath } of projectPathRows) {
-        const projectName = findProjectName(projectPath);
-        changedRequestCount += Number(updateProjectName.run(projectName, projectPath, projectName).changes);
+      for (const { project_path: projectPath, client_project_name: clientProjectName } of projectRows) {
+        const projectName = projectNameFinder(projectPath, clientProjectName);
+        changedRequestCount += Number(updateProjectName.run(projectName, projectPath, clientProjectName, projectName).changes);
       }
       this.database.exec('COMMIT');
     } catch (error) {

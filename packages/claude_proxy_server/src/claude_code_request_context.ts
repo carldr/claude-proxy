@@ -6,6 +6,8 @@ export interface ClaudeCodeRequestContext {
   sessionId: string | null;
   /** The directory Claude Code started in. Null when the request carries no environment block. */
   projectPath: string | null;
+  /** The value of the `X-Claude-Proxy-Project` header. Null when the client does not send it. */
+  clientProjectName: string | null;
   /**
    * The upstream `request-id` of the previous request in the same conversation, from `cc_prev_req` in the billing
    * header. Claude Code 2.1.304 sends only the new messages after the first request, without the environment block.
@@ -20,7 +22,10 @@ export interface ClaudeCodeRequestContext {
   lastUserMessageToolResultText: string;
 }
 
-const sessionIdPattern = /session_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/;
+/** The header in which a client names its project. It is for the proxy only, so the proxy does not forward it. */
+export const clientProjectNameHeaderName = 'x-claude-proxy-project';
+
+const sessionIdPattern =/session_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/;
 /**
  * Matches Claude Code's environment line, " - Primary working directory: /absolute/path", only at the start of a line.
  * Quoted text, such as a CLAUDE.md that mentions the line, does not match.
@@ -46,10 +51,16 @@ export function extractClaudeCodeRequestContext(
     isStreaming: requestFields.stream === true,
     sessionId: extractSessionId(requestHeaders, requestFields.metadata),
     projectPath: extractProjectPath(requestFields.system, messages),
+    clientProjectName: extractClientProjectName(requestHeaders),
     previousUpstreamRequestId: previousUpstreamRequestIdPattern.exec(readContentText(requestFields.system))?.[1] ?? null,
     lastUserMessageText: extractLastUserMessageText(messages),
     lastUserMessageToolResultText: extractLastUserMessageToolResultText(messages),
   };
+}
+
+function extractClientProjectName(requestHeaders: IncomingHttpHeaders): string | null {
+  const clientProjectNameHeader = requestHeaders[clientProjectNameHeaderName];
+  return typeof clientProjectNameHeader === 'string' ? clientProjectNameHeader.trim() || null : null;
 }
 
 function extractSessionId(requestHeaders: IncomingHttpHeaders, metadata: unknown): string | null {

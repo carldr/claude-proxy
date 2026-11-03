@@ -33,14 +33,20 @@ export function buildProjectNameRule(projectPathPattern: string, projectName: st
 }
 
 /**
- * Returns the name of the project of a path. The worktree directory does not count. The first matching rule wins.
- * Without a match, the last directory of the path is the name.
+ * Returns the name of the project of a request. The worktree directory does not count. The first matching rule wins,
+ * because a rule can name the part of a repository that a client cannot. Without a match, the name is
+ * `clientProjectName`, the value of the `X-Claude-Proxy-Project` header. Without a header, it is the last directory of the path.
  */
-export function findProjectName(projectNameRules: ProjectNameRule[], projectPath: string): string {
+export function findProjectName(
+  projectNameRules: ProjectNameRule[],
+  projectPath: string | null,
+  clientProjectName: string | null = null,
+): string | null {
+  if (projectPath === null) return clientProjectName;
   const pathWithoutWorktree = projectPath.replace(worktreeDirectoryPattern, '');
   for (const projectNameRule of projectNameRules) {
     const pathMatch = projectNameRule.projectPathMatcher.exec(pathWithoutWorktree);
     if (pathMatch) return projectNameRule.projectName ?? pathMatch[1]!;
   }
-  return path.basename(pathWithoutWorktree) || pathWithoutWorktree;
+  return clientProjectName ?? (path.basename(pathWithoutWorktree) || pathWithoutWorktree);
 }

@@ -29,6 +29,16 @@ for (const [projectPath, expectedProjectName] of [
   });
 }
 
+test('a rule wins over the name that the client sends, and the name that the client sends wins over the last directory', () => {
+  assert.equal(findProjectName(projectNameRules, '/Users/example_user/Development/monorepo/apps/planet', 'monorepo'), 'planet');
+  assert.equal(findProjectName(projectNameRules, '/Users/example_user/Development/folder-master', 'repository'), 'repository');
+});
+
+test('a request with no project path has the name that the client sends, or no name', () => {
+  assert.equal(findProjectName(projectNameRules, null, 'repository'), 'repository');
+  assert.equal(findProjectName(projectNameRules, null, null), null);
+});
+
 test('a star matches inside one directory only', () => {
   assert.equal(findProjectName(projectNameRules, '/srv/roy/github.com/a/b/some-game/@/worktrees/x'), 'x');
 });

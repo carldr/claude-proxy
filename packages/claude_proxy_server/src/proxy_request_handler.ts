@@ -6,7 +6,7 @@ import {
   readAssembledMessageToolText,
   type AssembledMessage,
 } from './anthropic_message_stream_assembler.ts';
-import { extractClaudeCodeRequestContext, type ClaudeCodeRequestContext } from './claude_code_request_context.ts';
+import { clientProjectNameHeaderName, extractClaudeCodeRequestContext, type ClaudeCodeRequestContext } from './claude_code_request_context.ts';
 import {
   estimateMessageCostUsd,
   findModelTokenPrices,
@@ -42,7 +42,7 @@ export interface ProxyRequestHandlerDependencies {
 
 const requestHeadersNotForwarded = new Set([
   'host', 'connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'te', 'trailer',
-  'content-length', 'accept-encoding',
+  'content-length', 'accept-encoding', clientProjectNameHeaderName,
 ]);
 /**
  * The proxy records only these paths and forwards every other path unrecorded. Through `HTTPS_PROXY`, Claude Code
@@ -90,6 +90,7 @@ export async function handleProxyRequest(
       isStreaming: requestContext.isStreaming,
       sessionId: requestContext.sessionId,
       projectPath: requestContext.projectPath,
+      clientProjectName: requestContext.clientProjectName,
       previousUpstreamRequestId: requestContext.previousUpstreamRequestId,
       requestHeadersJson: JSON.stringify(redactCredentialHeaders(clientRequest.headers)),
       requestBody,

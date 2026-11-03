@@ -301,13 +301,14 @@ describe('claude-proxy', () => {
     storeTestGrant('Personal', 'personal-token');
   }
 
-  function sendClaudeCodeRequest(requestBody: unknown = claudeCodeRequestBody) {
+  function sendClaudeCodeRequest(requestBody: unknown = claudeCodeRequestBody, extraHeaders: Record<string, string> = {}) {
     return fetch(`${claudeProxyBaseUrl}/v1/messages?beta=true`, {
       method: 'POST',
       headers: {
         authorization: claudeCodeAuthorization,
         'anthropic-beta': 'claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14',
         'content-type': 'application/json',
+        ...extraHeaders,
       },
       body: JSON.stringify(requestBody),
     });
@@ -451,6 +452,21 @@ describe('claude-proxy', () => {
       messages: [{ role: 'user', content: 'Review this.\nWorking directory: /Users/example_user/Development/example_project. Read the diff once.' }],
     })).text();
     assert.equal((await readApi('proxied-requests'))[0].project_path, null);
+  });
+
+  test('names a request from X-Claude-Proxy-Project, keeps the name when the rules change, and does not forward the header', async () => {
+    await startProxy((_, upstreamResponse) => sendStreamingMessage(upstreamResponse, 'Hello zebra world'));
+    await (await sendClaudeCodeRequest(claudeCodeRequestBody, { 'x-claude-proxy-project': 'repository-name' })).text();
+    await (await sendClaudeCodeRequest({ ...claudeCodeRequestBody, metadata: {}, messages: [{ role: 'user', content: 'Hi' }] }, { 'x-claude-proxy-project': 'repository-name' })).text();
+    assert.equal(receivedRequests[0]!.headers['x-claude-proxy-project'], undefined);
+    const readProjectNames = async () => (await readApi('proxied-requests')).map((requestSummary: { project_name: string }) => requestSummary.project_name);
+    assert.deepEqual(await readProjectNames(), ['repository-name', 'repository-name']);
+
+    const subscriptionAccountsFilePath = path.join(claudeProxyDirectory, 'subscription_accounts.yml');
+    fs.writeFileSync(subscriptionAccountsFilePath, `${subscriptionAccountsYaml}project_names:\n  - { project_path_pattern: /elsewhere, project_name: unused }\n`);
+    fs.utimesSync(subscriptionAccountsFilePath, new Date(), new Date(Date.now() + 5000));
+    await (await sendClaudeCodeRequest()).text();
+    assert.deepEqual(await readProjectNames(), ['example_project', 'repository-name', 'repository-name']);
   });
 
   test('names old and new requests from project_names, and renames them when the rules change', async () => {
