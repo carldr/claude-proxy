@@ -190,6 +190,39 @@ describe('request bodies in the request database', () => {
     requestDatabase.close();
   });
 
+  test('keeps writing after a large search text makes the search index write a row number above 2^53', () => {
+    const requestDatabase = new RequestDatabase(databasePath);
+    const startRequest = () => requestDatabase.insertStartedRequest(startedRequest(Buffer.from('{}'), undefined, 'zebra'));
+    const randomWords = (wordCount: number) => Array.from({ length: wordCount }, () => `w${Math.floor(Math.random() * 1e7)}`).join(' ');
+
+    // The later completions delete from segments that are already on disk, so the flush writes tombstone pages.
+    const earlierRequestIds = Array.from({ length: 20 }, startRequest);
+    for (const proxiedRequestId of earlierRequestIds) requestDatabase.completeRequest(proxiedRequestId, completedRequest(randomWords(50)));
+    const openRequestIds = Array.from({ length: 5 }, startRequest);
+    for (const proxiedRequestId of openRequestIds) {
+      requestDatabase.completeRequest(proxiedRequestId, completedRequest(randomWords(300000)));
+    }
+
+    const laterRequestId = startRequest();
+    requestDatabase.insertUpstreamAttempt({
+      proxiedRequestId: laterRequestId,
+      attemptNumber: 1,
+      routeKind: 'subscription_account',
+      routeName: 'Work',
+      upstreamUrl: 'https://api.anthropic.com/v1/messages',
+      statusCode: 200,
+      errorBody: null,
+      startedAt: new Date().toISOString(),
+      durationMs: 1,
+    });
+    requestDatabase.completeRequest(laterRequestId, completedRequest('The giraffe fixed it'));
+    requestDatabase.writeSetting('example_setting', 'example_value');
+
+    assert.equal(requestDatabase.readProxiedRequest(laterRequestId)?.status_code, 200);
+    assert.equal(requestDatabase.listProxiedRequests({ searchText: 'giraffe' }, { limit: 10 }).length, 1);
+    requestDatabase.close();
+  });
+
   test('stores an empty body as no body', () => {
     const requestDatabase = new RequestDatabase(databasePath);
     const proxiedRequestId = requestDatabase.insertStartedRequest(startedRequest(Buffer.alloc(0)));

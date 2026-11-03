@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
+import { DatabaseSync, type SQLInputValue, type StatementSync } from 'node:sqlite';
 import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 import { extractClaudeCodeRequestContext } from './claude_code_request_context.ts';
 
@@ -278,6 +278,17 @@ export class RequestDatabase {
     this.database.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnType}`);
   }
 
+  /**
+   * Prepares a statement that writes. A flush of the search index can leave the last insert rowid of the connection
+   * above 2^53, because the tombstone pages of `contentless_delete` have such row numbers. The rowid stays there until
+   * the next insert into an ordinary table. `run` converts it to a number and throws, so every write reads it as a BigInt.
+   */
+  private prepareWrite(writeStatementText: string): StatementSync {
+    const writeStatement = this.database.prepare(writeStatementText);
+    writeStatement.setReadBigInts(true);
+    return writeStatement;
+  }
+
   private listColumnNames(tableName: string): string[] {
     return (this.database.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>).map((column) => column.name);
   }
@@ -294,7 +305,7 @@ export class RequestDatabase {
     const readPlainHeaders = this.database.prepare(
       'SELECT id, request_headers_json, response_headers_json FROM proxied_requests WHERE id > ? ORDER BY id LIMIT ?',
     );
-    const updateHeaders = this.database.prepare(
+    const updateHeaders = this.prepareWrite(
       'UPDATE proxied_requests SET request_headers_json_zstd = ?, response_headers_json_zstd = ? WHERE id = ?',
     );
     let lastProxiedRequestId = 0;
@@ -364,7 +375,7 @@ export class RequestDatabase {
       `SELECT id, started_at, request_body_zstd FROM proxied_requests
        WHERE request_body_zstd IS NOT NULL AND id > ? ORDER BY id LIMIT ?`,
     );
-    const updateRequestBody = this.database.prepare(
+    const updateRequestBody = this.prepareWrite(
       'UPDATE proxied_requests SET request_body_zstd = NULL, request_body_layout_zstd = ? WHERE id = ?',
     );
     let lastProxiedRequestId = 0;
@@ -398,9 +409,9 @@ export class RequestDatabase {
     }
     if (splitRequestBodyCount > 0) console.log(`Split ${splitRequestBodyCount} request bodies into parts.`);
     // A part that an earlier version stored has no day of use. It counts as used on the day of the split.
-    this.database
-      .prepare('UPDATE request_body_parts SET part_last_used_on = ? WHERE part_last_used_on IS NULL')
-      .run(new Date().toISOString().slice(0, 10));
+    this.prepareWrite('UPDATE request_body_parts SET part_last_used_on = ? WHERE part_last_used_on IS NULL').run(
+      new Date().toISOString().slice(0, 10),
+    );
     this.writeSetting(requestBodyPartsSplitSettingName, new Date().toISOString());
     return splitRequestBodyCount > 0;
   }
@@ -446,13 +457,15 @@ export class RequestDatabase {
       .get(partSha256) as { id: number; part_last_used_on: string | null } | undefined;
     if (storedPart) {
       if (storedPart.part_last_used_on === null || storedPart.part_last_used_on < usedOn) {
-        this.database.prepare('UPDATE request_body_parts SET part_last_used_on = ? WHERE id = ?').run(usedOn, storedPart.id);
+        this.prepareWrite('UPDATE request_body_parts SET part_last_used_on = ? WHERE id = ?').run(usedOn, storedPart.id);
       }
       return storedPart.id;
     }
-    const insertResult = this.database
-      .prepare('INSERT INTO request_body_parts (part_sha256, part_json_zstd, part_last_used_on) VALUES (?, ?, ?)')
-      .run(partSha256, zstdCompressSync(Buffer.from(partJson)), usedOn);
+    const insertResult = this.prepareWrite('INSERT INTO request_body_parts (part_sha256, part_json_zstd, part_last_used_on) VALUES (?, ?, ?)').run(
+      partSha256,
+      zstdCompressSync(Buffer.from(partJson)),
+      usedOn,
+    );
     return Number(insertResult.lastInsertRowid);
   }
 
@@ -501,7 +514,7 @@ export class RequestDatabase {
         .prepare("SELECT id FROM proxied_requests WHERE request_path LIKE '/v1/messages%' ORDER BY id")
         .all() as Array<{ id: number }>;
       const readRequest = this.database.prepare('SELECT session_id, request_body_zstd FROM proxied_requests WHERE id = ?');
-      const updateProjectPath = this.database.prepare(
+      const updateProjectPath = this.prepareWrite(
         'UPDATE proxied_requests SET project_path = ?, is_project_path_inherited = ? WHERE id = ?',
       );
       for (const { id: proxiedRequestId } of messagesRequestIds) {
@@ -579,8 +592,8 @@ export class RequestDatabase {
         ? this.storeRequestBodyParts(startedRequest.requestBody, startedRequest.startedAt.slice(0, 10))
         : null;
       const wholeRequestBody = hasRequestBody && requestBodyLayout === null ? zstdCompressSync(startedRequest.requestBody) : null;
-      const insertResult = this.database
-        .prepare(
+      const insertResult = this
+        .prepareWrite(
           `INSERT INTO proxied_requests (
             started_at, http_method, request_path, client_auth_kind, model, is_streaming, session_id, project_path, project_name,
             starting_branch, source_hostname,
@@ -606,9 +619,12 @@ export class RequestDatabase {
           startedRequest.lastUserMessageText.slice(0, userTextPreviewLength),
         );
       const proxiedRequestId = Number(insertResult.lastInsertRowid);
-      this.database
-        .prepare('INSERT INTO proxied_request_search_index (rowid, user_text, tool_text, response_text) VALUES (?, ?, ?, ?)')
-        .run(proxiedRequestId, startedRequest.lastUserMessageText, startedRequest.lastUserMessageToolResultText, '');
+      this.prepareWrite('INSERT INTO proxied_request_search_index (rowid, user_text, tool_text, response_text) VALUES (?, ?, ?, ?)').run(
+        proxiedRequestId,
+        startedRequest.lastUserMessageText,
+        startedRequest.lastUserMessageToolResultText,
+        '',
+      );
       this.database.exec('COMMIT');
       this.searchTextOfOpenRequests.set(proxiedRequestId, {
         userText: startedRequest.lastUserMessageText,
@@ -622,8 +638,8 @@ export class RequestDatabase {
   }
 
   completeRequest(proxiedRequestId: number, completedRequest: CompletedProxiedRequest): void {
-    this.database
-      .prepare(
+    this
+      .prepareWrite(
         `UPDATE proxied_requests SET
           completed_at = ?, duration_ms = ?, route_kind = ?, route_name = ?, status_code = ?, error_type = ?,
           stop_reason = ?, input_tokens = ?, output_tokens = ?, cache_creation_5m_input_tokens = ?,
@@ -658,10 +674,13 @@ export class RequestDatabase {
     const toolText = [searchTextOfRequest.toolText, completedRequest.responseToolText].filter((text) => text !== '').join('\n');
     this.database.exec('BEGIN');
     try {
-      this.database.prepare('DELETE FROM proxied_request_search_index WHERE rowid = ?').run(proxiedRequestId);
-      this.database
-        .prepare('INSERT INTO proxied_request_search_index (rowid, user_text, tool_text, response_text) VALUES (?, ?, ?, ?)')
-        .run(proxiedRequestId, searchTextOfRequest.userText, toolText, completedRequest.responseText);
+      this.prepareWrite('DELETE FROM proxied_request_search_index WHERE rowid = ?').run(proxiedRequestId);
+      this.prepareWrite('INSERT INTO proxied_request_search_index (rowid, user_text, tool_text, response_text) VALUES (?, ?, ?, ?)').run(
+        proxiedRequestId,
+        searchTextOfRequest.userText,
+        toolText,
+        completedRequest.responseText,
+      );
       this.database.exec('COMMIT');
     } catch (error) {
       this.database.exec('ROLLBACK');
@@ -680,12 +699,12 @@ export class RequestDatabase {
     const readExpiringRequestIds = this.database.prepare(
       'SELECT id FROM proxied_requests WHERE started_at < ? AND contents_expired_at IS NULL ORDER BY started_at LIMIT ?',
     );
-    const expireRequestContents = this.database.prepare(
+    const expireRequestContents = this.prepareWrite(
       `UPDATE proxied_requests SET request_headers_json_zstd = NULL, request_body_zstd = NULL, request_body_layout_zstd = NULL,
          response_headers_json_zstd = NULL, response_body_zstd = NULL, user_text_preview = NULL, contents_expired_at = ?
        WHERE id = ?`,
     );
-    const deleteSearchText = this.database.prepare('DELETE FROM proxied_request_search_index WHERE rowid = ?');
+    const deleteSearchText = this.prepareWrite('DELETE FROM proxied_request_search_index WHERE rowid = ?');
     let expiredRequestCount = 0;
     for (;;) {
       const expiringRequestIds = readExpiringRequestIds.all(startedBefore, requestBodyPartsSplitBatchSize) as Array<{ id: number }>;
@@ -703,13 +722,13 @@ export class RequestDatabase {
       }
       expiredRequestCount += expiringRequestIds.length;
     }
-    this.database.prepare('DELETE FROM request_body_parts WHERE part_last_used_on < ?').run(startedBefore.slice(0, 10));
+    this.prepareWrite('DELETE FROM request_body_parts WHERE part_last_used_on < ?').run(startedBefore.slice(0, 10));
     return expiredRequestCount;
   }
 
   insertUpstreamAttempt(upstreamAttempt: UpstreamAttempt): void {
-    this.database
-      .prepare(
+    this
+      .prepareWrite(
         `INSERT INTO upstream_attempts (
           proxied_request_id, attempt_number, route_kind, route_name, upstream_url, status_code, error_body,
           started_at, duration_ms
@@ -730,9 +749,7 @@ export class RequestDatabase {
 
   /** Marks requests that were still open when the proxy stopped, so they do not show as pending forever. */
   markUnfinishedRequestsInterrupted(): void {
-    this.database
-      .prepare("UPDATE proxied_requests SET error_type = 'proxy_restarted', completed_at = started_at WHERE completed_at IS NULL")
-      .run();
+    this.prepareWrite("UPDATE proxied_requests SET error_type = 'proxy_restarted', completed_at = started_at WHERE completed_at IS NULL").run();
   }
 
   readSetting(settingName: string): string | null {
@@ -744,11 +761,11 @@ export class RequestDatabase {
 
   writeSetting(settingName: string, settingValue: string | null): void {
     if (settingValue === null) {
-      this.database.prepare('DELETE FROM proxy_settings WHERE setting_name = ?').run(settingName);
+      this.prepareWrite('DELETE FROM proxy_settings WHERE setting_name = ?').run(settingName);
       return;
     }
-    this.database
-      .prepare(
+    this
+      .prepareWrite(
         `INSERT INTO proxy_settings (setting_name, setting_value) VALUES (?, ?)
          ON CONFLICT (setting_name) DO UPDATE SET setting_value = excluded.setting_value`,
       )
