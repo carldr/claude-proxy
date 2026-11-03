@@ -36,9 +36,9 @@ export function SessionsView({ onShowSessionRequests }: { onShowSessionRequests:
           <thead>
             <tr>
               <th>Last activity</th>
+              <th>Hostname</th>
               <th>Project</th>
-              <th>Starting branch</th>
-              <th className="source-hostname">Hostname</th>
+              <th className="hidden-at-narrow-width">Starting branch</th>
               <th>First prompt</th>
               <th className="numeric">Requests</th>
               <th className="numeric">Cost</th>
@@ -50,11 +50,11 @@ export function SessionsView({ onShowSessionRequests }: { onShowSessionRequests:
               <tr key={session.session_id} data-clickable="true" tabIndex={0} onClick={() => onShowSessionRequests(session.session_id)}
                 onKeyDown={(keyEvent) => keyEvent.key === 'Enter' && onShowSessionRequests(session.session_id)}>
                 <td>{formatTimestamp(session.last_started_at)}</td>
+                <td>{session.source_hostname}</td>
                 <td className={session.project_name ? 'project-name' : 'project-name muted'} title={session.project_path ?? ''}>
                   {formatProjectLabel(session.project_name, session.project_path)}
                 </td>
-                <td>{session.starting_branch}</td>
-                <td className="source-hostname">{session.source_hostname}</td>
+                <td className="hidden-at-narrow-width">{session.starting_branch}</td>
                 <td className="prompt-preview" title={session.first_user_text ?? ''}>
                   {session.first_user_text}
                 </td>

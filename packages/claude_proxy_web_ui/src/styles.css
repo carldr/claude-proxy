@@ -510,7 +510,7 @@ details > summary {
 }
 
 @media (max-width: 1024px) {
-  .data-table .source-hostname {
+  .data-table .hidden-at-narrow-width {
     display: none;
   }
 }

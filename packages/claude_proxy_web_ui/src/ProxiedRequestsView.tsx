@@ -195,12 +195,12 @@ export function ProxiedRequestsView({ filters, onFiltersChange, findRouteAppeara
                   <th>Time</th>
                   <th className="centred">Route</th>
                   <th>Model</th>
+                  <th>Hostname</th>
                   <th>Project</th>
-                  <th>Starting branch</th>
-                  <th className="source-hostname">Hostname</th>
-                  <th>Prompt</th>
-                  <th className="numeric">Input</th>
-                  <th className="numeric">Output</th>
+                  <th className="hidden-at-narrow-width">Starting branch</th>
+                  <th className="hidden-at-narrow-width">Prompt</th>
+                  <th className="numeric hidden-at-narrow-width">Input</th>
+                  <th className="numeric hidden-at-narrow-width">Output</th>
                   <th className="numeric">Cost</th>
                   <th className="centred">Status</th>
                   <th className="numeric">Duration</th>
@@ -225,19 +225,19 @@ export function ProxiedRequestsView({ filters, onFiltersChange, findRouteAppeara
                       </span>
                     </td>
                     <td>{proxiedRequest.model ?? <span className="muted">{proxiedRequest.request_path}</span>}</td>
+                    <td>{proxiedRequest.source_hostname}</td>
                     <td
                       className={proxiedRequest.project_name ? 'project-name' : 'project-name muted'}
                       title={proxiedRequest.is_project_path_inherited ? `${proxiedRequest.project_path} (from an earlier request in the session)` : (proxiedRequest.project_path ?? '')}
                     >
                       {formatProjectLabel(proxiedRequest.project_name, proxiedRequest.project_path)}
                     </td>
-                    <td>{proxiedRequest.starting_branch}</td>
-                    <td className="source-hostname">{proxiedRequest.source_hostname}</td>
-                    <td className="prompt-preview" title={proxiedRequest.user_text_preview ?? ''}>
+                    <td className="hidden-at-narrow-width">{proxiedRequest.starting_branch}</td>
+                    <td className="prompt-preview hidden-at-narrow-width" title={proxiedRequest.user_text_preview ?? ''}>
                       {proxiedRequest.user_text_preview || <span className="muted">{proxiedRequest.stop_reason === null ? '' : 'Tool results'}</span>}
                     </td>
-                    <td className="numeric">{formatTokenCount(totalInputTokens(proxiedRequest))}</td>
-                    <td className="numeric">{formatTokenCount(proxiedRequest.output_tokens)}</td>
+                    <td className="numeric hidden-at-narrow-width">{formatTokenCount(totalInputTokens(proxiedRequest))}</td>
+                    <td className="numeric hidden-at-narrow-width">{formatTokenCount(proxiedRequest.output_tokens)}</td>
                     <td className="numeric">{formatCostUsd(proxiedRequest.estimated_cost_usd)}</td>
                     <td className="centred">
                       <RequestStatus proxiedRequest={proxiedRequest} />
