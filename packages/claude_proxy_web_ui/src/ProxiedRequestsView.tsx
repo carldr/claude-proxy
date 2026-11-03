@@ -11,7 +11,6 @@ import {
   formatDuration,
   formatTimestamp,
   formatTokenCount,
-  shortenProjectPath,
   totalInputTokens,
 } from './display_formatting.ts';
 import { ProxiedRequestDetailPanel } from './ProxiedRequestDetailPanel.tsx';
@@ -38,7 +37,7 @@ export function ProxiedRequestsView({ filters, onFiltersChange, findRouteAppeara
   const [hasOlderRequests, setHasOlderRequests] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
   const [costTotals, setCostTotals] = useState<ProxiedRequestCostTotals | null>(null);
-  const [filterOptions, setFilterOptions] = useState<RequestFilterOptions>({ models: [], routeNames: [], projectPaths: [] });
+  const [filterOptions, setFilterOptions] = useState<RequestFilterOptions>({ models: [], routeNames: [], projectNames: [] });
   const [selectedRequestId, setSelectedRequestId] = useState<number | null>(null);
   const [searchTextDraft, setSearchTextDraft] = useState(filters.searchText);
 
@@ -100,12 +99,10 @@ export function ProxiedRequestsView({ filters, onFiltersChange, findRouteAppeara
             value={searchTextDraft}
             onChange={(changeEvent) => setSearchTextDraft(changeEvent.target.value)}
           />
-          <select aria-label="Project" value={filters.projectPath} onChange={(changeEvent) => updateFilter('projectPath', changeEvent.target.value)}>
+          <select aria-label="Project" value={filters.projectName} onChange={(changeEvent) => updateFilter('projectName', changeEvent.target.value)}>
             <option value="">All projects</option>
-            {filterOptions.projectPaths.map((projectPath) => (
-              <option key={projectPath} value={projectPath}>
-                {shortenProjectPath(projectPath)}
-              </option>
+            {filterOptions.projectNames.map((projectName) => (
+              <option key={projectName}>{projectName}</option>
             ))}
           </select>
           <select aria-label="Model" value={filters.model} onChange={(changeEvent) => updateFilter('model', changeEvent.target.value)}>
@@ -204,7 +201,7 @@ export function ProxiedRequestsView({ filters, onFiltersChange, findRouteAppeara
                       className={proxiedRequest.is_project_path_inherited ? 'project-name muted' : 'project-name'}
                       title={proxiedRequest.is_project_path_inherited ? `${proxiedRequest.project_path} (from an earlier request in the session)` : (proxiedRequest.project_path ?? '')}
                     >
-                      {shortenProjectPath(proxiedRequest.project_path)}
+                      {proxiedRequest.project_name}
                     </td>
                     <td className="prompt-preview" title={proxiedRequest.user_text_preview ?? ''}>
                       {proxiedRequest.user_text_preview || <span className="muted">{proxiedRequest.stop_reason === null ? '' : 'Tool results'}</span>}

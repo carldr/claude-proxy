@@ -28,17 +28,6 @@ export function formatDuration(durationMs: number | null): string {
   return `${Math.floor(durationMs / 60_000)} min ${Math.round((durationMs % 60_000) / 1000)} s`;
 }
 
-/**
- * Shows the last two directories of a project path, which is usually enough to tell projects apart.
- * A leading "Development" directory is dropped, so ~/Development/claude-proxy shows as "claude-proxy".
- */
-export function shortenProjectPath(projectPath: string | null): string {
-  if (!projectPath) return '';
-  const lastTwoDirectories = projectPath.split('/').filter(Boolean).slice(-2);
-  if (lastTwoDirectories.length === 2 && lastTwoDirectories[0] === 'Development') lastTwoDirectories.shift();
-  return lastTwoDirectories.join('/');
-}
-
 export function totalInputTokens(request: {
   input_tokens: number | null;
   cache_creation_5m_input_tokens: number | null;

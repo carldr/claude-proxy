@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import path from 'node:path';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 import { extractClaudeCodeRequestContext } from './claude_code_request_context.ts';
@@ -64,7 +65,7 @@ export interface ProxiedRequestFilters {
   routeName?: string;
   /** "2xx", "4xx", "5xx", "pending", or one status code such as "429". */
   status?: string;
-  projectPath?: string;
+  projectName?: string;
   sessionId?: string;
   searchText?: string;
 }
@@ -76,7 +77,7 @@ export interface ProxiedRequestPage {
 
 const proxiedRequestSummaryColumns = `
   r.id, r.started_at, r.completed_at, r.duration_ms, r.http_method, r.request_path, r.client_auth_kind,
-  r.route_kind, r.route_name, r.model, r.is_streaming, r.session_id, r.project_path,
+  r.route_kind, r.route_name, r.model, r.is_streaming, r.session_id, r.project_path, r.project_name,
   r.is_project_path_inherited, r.status_code,
   r.error_type, r.stop_reason, r.input_tokens, r.output_tokens, r.cache_creation_5m_input_tokens,
   r.cache_creation_1h_input_tokens, r.cache_read_input_tokens, r.estimated_cost_usd,
@@ -121,6 +122,9 @@ export class RequestDatabase {
    * completeRequest cannot read the request's text back. It writes the row again with this text and the response's.
    */
   private readonly searchTextOfOpenRequests = new Map<number, { userText: string; toolText: string }>();
+
+  /** Names the project of a new request. `applyProjectNames` replaces this function. */
+  private findProjectName: (projectPath: string) => string = (projectPath) => path.basename(projectPath);
 
   constructor(databasePath: string) {
     this.database = new DatabaseSync(databasePath);
@@ -214,6 +218,7 @@ export class RequestDatabase {
       ['response_headers_json_zstd', 'BLOB'],
       ['user_text_preview', 'TEXT'],
       ['contents_expired_at', 'TEXT'],
+      ['project_name', 'TEXT'],
     ]) {
       this.addMissingColumn('proxied_requests', columnName, columnType);
     }
@@ -241,6 +246,8 @@ export class RequestDatabase {
       DROP INDEX IF EXISTS proxied_requests_session_id;
       -- listRequestFilterOptions groups by model with MAX(started_at), and the model filter matches model.
       CREATE INDEX IF NOT EXISTS proxied_requests_model_started_at ON proxied_requests (model, started_at);
+      -- listRequestFilterOptions lists project_name, and the project filter matches it.
+      CREATE INDEX IF NOT EXISTS proxied_requests_project_name ON proxied_requests (project_name);
       -- summariseProxiedRequestCosts sums estimated_cost_usd by started_at, and the date filters match started_at.
       CREATE INDEX IF NOT EXISTS proxied_requests_started_at_estimated_cost_usd ON proxied_requests (started_at, estimated_cost_usd);
       -- listSessions groups every request by session_id, and assignProjectPath finds a request of a session.
@@ -565,9 +572,9 @@ export class RequestDatabase {
       const insertResult = this.database
         .prepare(
           `INSERT INTO proxied_requests (
-            started_at, http_method, request_path, client_auth_kind, model, is_streaming, session_id, project_path,
+            started_at, http_method, request_path, client_auth_kind, model, is_streaming, session_id, project_path, project_name,
             is_project_path_inherited, request_headers_json_zstd, request_body_zstd, request_body_layout_zstd, user_text_preview
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           startedRequest.startedAt,
@@ -578,6 +585,7 @@ export class RequestDatabase {
           startedRequest.isStreaming ? 1 : 0,
           startedRequest.sessionId,
           projectPathAssignment.projectPath,
+          projectPathAssignment.projectPath === null ? null : this.findProjectName(projectPathAssignment.projectPath),
           projectPathAssignment.isProjectPathInherited ? 1 : 0,
           compressText(startedRequest.requestHeadersJson),
           wholeRequestBody,
@@ -734,6 +742,34 @@ export class RequestDatabase {
       .run(settingName, settingValue);
   }
 
+  /**
+   * Names the project of every new request with this function, and writes the name of each stored request that differs.
+   * `project_path` does not change, because `claude --resume` and the project routes read it.
+   * Returns the number of requests that changed.
+   */
+  applyProjectNames(findProjectName: (projectPath: string) => string): number {
+    this.findProjectName = findProjectName;
+    const projectPathRows = this.database
+      .prepare('SELECT DISTINCT project_path FROM proxied_requests WHERE project_path IS NOT NULL')
+      .all() as Array<{ project_path: string }>;
+    const updateProjectName = this.database.prepare(
+      'UPDATE proxied_requests SET project_name = ? WHERE project_path = ? AND project_name IS NOT ?',
+    );
+    let changedRequestCount = 0;
+    this.database.exec('BEGIN');
+    try {
+      for (const { project_path: projectPath } of projectPathRows) {
+        const projectName = findProjectName(projectPath);
+        changedRequestCount += Number(updateProjectName.run(projectName, projectPath, projectName).changes);
+      }
+      this.database.exec('COMMIT');
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
+    return changedRequestCount;
+  }
+
   listProxiedRequests(filters: ProxiedRequestFilters, page: ProxiedRequestPage): Record<string, unknown>[] {
     const { whereClauses, parameters } = buildProxiedRequestConditions(filters);
     if (page.beforeId) {
@@ -811,7 +847,7 @@ export class RequestDatabase {
         )
         .all(recentTrafficFrom),
       routeNames: listDistinct('route_name'),
-      projectPaths: listDistinct('project_path'),
+      projectNames: listDistinct('project_name'),
     };
   }
 
@@ -833,22 +869,22 @@ export class RequestDatabase {
   }
 
   /** Lists Claude Code sessions, newest first, with the first user message of each session. */
-  listSessions(projectPath: string | undefined, limit: number): Record<string, unknown>[] {
+  listSessions(projectName: string | undefined, limit: number): Record<string, unknown>[] {
     return this.database
       .prepare(
-        `SELECT r.session_id, MAX(r.project_path) AS project_path, MIN(r.started_at) AS first_started_at,
+        `SELECT r.session_id, MAX(r.project_path) AS project_path, MAX(r.project_name) AS project_name, MIN(r.started_at) AS first_started_at,
                 MAX(r.started_at) AS last_started_at, COUNT(*) AS request_count,
                 SUM(r.estimated_cost_usd) AS estimated_cost_usd,
                 (SELECT r2.user_text_preview FROM proxied_requests r2
                   WHERE r2.session_id = r.session_id AND r2.user_text_preview != ''
                   ORDER BY r2.id LIMIT 1) AS first_user_text
          FROM proxied_requests r
-         WHERE r.session_id IS NOT NULL ${projectPath ? 'AND r.project_path = ?' : ''}
+         WHERE r.session_id IS NOT NULL ${projectName ? 'AND r.project_name = ?' : ''}
          GROUP BY r.session_id
          ORDER BY last_started_at DESC
          LIMIT ?`,
       )
-      .all(...(projectPath ? [projectPath, limit] : [limit])) as Record<string, unknown>[];
+      .all(...(projectName ? [projectName, limit] : [limit])) as Record<string, unknown>[];
   }
 
   close(): void {
@@ -869,7 +905,7 @@ function buildProxiedRequestConditions(filters: ProxiedRequestFilters): { whereC
   if (filters.startedTo) addCondition('r.started_at < ?', filters.startedTo);
   if (filters.model) addCondition('r.model = ?', filters.model);
   if (filters.routeName) addCondition('r.route_name = ?', filters.routeName);
-  if (filters.projectPath) addCondition('r.project_path = ?', filters.projectPath);
+  if (filters.projectName) addCondition('r.project_name = ?', filters.projectName);
   if (filters.sessionId) addCondition('r.session_id = ?', filters.sessionId);
   if (filters.status === 'pending') addCondition('r.completed_at IS NULL');
   else if (filters.status && /^[1-5]xx$/.test(filters.status)) {

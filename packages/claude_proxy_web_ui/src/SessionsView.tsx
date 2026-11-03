@@ -1,31 +1,29 @@
 import { useEffect, useState } from 'react';
 import { claudeProxyApi, type ClaudeCodeSession } from './claude_proxy_api.ts';
-import { formatCostUsd, formatTimestamp, shortenProjectPath } from './display_formatting.ts';
+import { formatCostUsd, formatTimestamp } from './display_formatting.ts';
 
 /** Lists Claude Code sessions, so a past conversation can be found by project and by its first prompt. */
 export function SessionsView({ onShowSessionRequests }: { onShowSessionRequests: (sessionId: string) => void }) {
-  const [projectPath, setProjectPath] = useState('');
-  const [projectPaths, setProjectPaths] = useState<string[]>([]);
+  const [projectName, setProjectName] = useState('');
+  const [projectNames, setProjectNames] = useState<string[]>([]);
   const [sessions, setSessions] = useState<ClaudeCodeSession[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
-    void claudeProxyApi.readRequestFilterOptions().then((filterOptions) => setProjectPaths(filterOptions.projectPaths), () => undefined);
+    void claudeProxyApi.readRequestFilterOptions().then((filterOptions) => setProjectNames(filterOptions.projectNames), () => undefined);
   }, []);
 
   useEffect(() => {
-    claudeProxyApi.listSessions(projectPath).then(setSessions, (error: Error) => setLoadError(error.message));
-  }, [projectPath]);
+    claudeProxyApi.listSessions(projectName).then(setSessions, (error: Error) => setLoadError(error.message));
+  }, [projectName]);
 
   return (
     <div className="scrolling-view">
       <div className="view-toolbar">
-        <select aria-label="Project" value={projectPath} onChange={(changeEvent) => setProjectPath(changeEvent.target.value)}>
+        <select aria-label="Project" value={projectName} onChange={(changeEvent) => setProjectName(changeEvent.target.value)}>
           <option value="">All projects</option>
-          {projectPaths.map((candidatePath) => (
-            <option key={candidatePath} value={candidatePath}>
-              {shortenProjectPath(candidatePath)}
-            </option>
+          {projectNames.map((candidateName) => (
+            <option key={candidateName}>{candidateName}</option>
           ))}
         </select>
         <span className="muted">Select a session to see its requests. Use the Requests search to find text inside sessions.</span>
@@ -49,7 +47,7 @@ export function SessionsView({ onShowSessionRequests }: { onShowSessionRequests:
               <tr key={session.session_id} data-clickable="true" tabIndex={0} onClick={() => onShowSessionRequests(session.session_id)}
                 onKeyDown={(keyEvent) => keyEvent.key === 'Enter' && onShowSessionRequests(session.session_id)}>
                 <td>{formatTimestamp(session.last_started_at)}</td>
-                <td className="project-name" title={session.project_path ?? ''}>{shortenProjectPath(session.project_path)}</td>
+                <td className="project-name" title={session.project_path ?? ''}>{session.project_name}</td>
                 <td className="prompt-preview" title={session.first_user_text ?? ''}>
                   {session.first_user_text}
                 </td>

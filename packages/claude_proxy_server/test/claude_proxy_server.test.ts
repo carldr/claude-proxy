@@ -416,7 +416,7 @@ describe('claude-proxy', () => {
       [null, 0],
     ]);
     const requestFilterOptions = await readApi('request-filter-options');
-    assert.deepEqual(requestFilterOptions.projectPaths, ['/Users/example_user/Development/example_project']);
+    assert.deepEqual(requestFilterOptions.projectNames, ['example_project']);
     assert.deepEqual(requestFilterOptions.models, [{ model: 'claude-opus-5-5', has_recent_traffic: 1 }]);
   });
 
@@ -441,7 +441,28 @@ describe('claude-proxy', () => {
     for (const costTotalName of ['total_cost_usd', 'last_30_days_cost_usd', 'last_24_hours_cost_usd']) {
       assert.ok(Math.abs(sessionCostTotals[costTotalName] - 2 * requestCostUsd) < 1e-12, costTotalName);
     }
-    assert.equal((await readApi('proxied-request-cost-totals?projectPath=/elsewhere')).total_cost_usd, null);
+    assert.equal((await readApi('proxied-request-cost-totals?projectName=elsewhere')).total_cost_usd, null);
+  });
+
+  test('names old and new requests from project_names, and renames them when the rules change', async () => {
+    await startProxy((_, upstreamResponse) => sendStreamingMessage(upstreamResponse, 'Hello zebra world'));
+    await (await sendClaudeCodeRequest()).text();
+    assert.equal((await readApi('proxied-requests'))[0].project_name, 'example_project');
+
+    const subscriptionAccountsFilePath = path.join(claudeProxyDirectory, 'subscription_accounts.yml');
+    fs.writeFileSync(
+      subscriptionAccountsFilePath,
+      `${subscriptionAccountsYaml}project_names:\n  - { project_path_pattern: /Users/example_user/Development/example_project, project_name: renamed }\n`,
+    );
+    fs.utimesSync(subscriptionAccountsFilePath, new Date(), new Date(Date.now() + 5000));
+    await (await sendClaudeCodeRequest()).text();
+
+    const requestSummaries = await readApi('proxied-requests');
+    assert.deepEqual(requestSummaries.map((requestSummary: { project_name: string }) => requestSummary.project_name), ['renamed', 'renamed']);
+    assert.equal(requestSummaries[0].project_path, '/Users/example_user/Development/example_project');
+    assert.deepEqual((await readApi('request-filter-options')).projectNames, ['renamed']);
+    assert.equal((await readApi('proxied-requests?projectName=renamed')).length, 2);
+    assert.equal((await readApi('sessions?projectName=renamed'))[0].project_name, 'renamed');
   });
 
   test('fails over on a weekly rejection and stays on the other account until the reset', async () => {

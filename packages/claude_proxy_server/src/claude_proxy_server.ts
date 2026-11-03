@@ -12,6 +12,7 @@ import { SubscriptionAccountLoginHandler } from './subscription_account_login_ha
 import { SubscriptionAccountGrantRefresher, type OAuthEndpoints } from './subscription_account_oauth.ts';
 import { SubscriptionAccountRouter } from './subscription_account_router.ts';
 import { SubscriptionAccountStore } from './subscription_account_store.ts';
+import { findProjectName } from './project_name_rules.ts';
 import { SubscriptionAccountUsageMonitor } from './subscription_account_usage_monitor.ts';
 import {
   emptySubscriptionAccountsConfig,
@@ -220,7 +221,18 @@ export function createClaudeProxyServer(options: ClaudeProxyServerOptions): Clau
   requestContentsExpiryTimer.unref();
   const subscriptionAccountStore = new SubscriptionAccountStore(path.join(options.claudeProxyDirectory, 'requests.sqlite'));
   makeRequestDatabaseFilesPrivate();
-  const readSubscriptionAccountsConfig = () => subscriptionAccountsConfigFile.read().config;
+  let configOfAppliedProjectNames: SubscriptionAccountsConfig | null = null;
+  // A valid change of the file gives a new config. A broken file keeps the last config, so its project names stay.
+  const readSubscriptionAccountsConfig = () => {
+    const { config, loadError } = subscriptionAccountsConfigFile.read();
+    if (config !== configOfAppliedProjectNames && loadError === null) {
+      configOfAppliedProjectNames = config;
+      const changedRequestCount = requestDatabase.applyProjectNames((projectPath) => findProjectName(config.projectNameRules, projectPath));
+      if (changedRequestCount > 0) console.log(`Wrote the project name of ${changedRequestCount} requests.`);
+    }
+    return config;
+  };
+  readSubscriptionAccountsConfig();
   // The router and the usage monitor share one refresher, so that one refresh at a time runs for each grant.
   const subscriptionAccountGrantRefresher = new SubscriptionAccountGrantRefresher(subscriptionAccountStore, options.oauthEndpoints);
   const subscriptionAccountRouter = new SubscriptionAccountRouter(

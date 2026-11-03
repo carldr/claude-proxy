@@ -124,6 +124,40 @@ describe('request bodies in the request database', () => {
     assert.equal(countRows('proxied_requests', 'WHERE request_body_zstd IS NOT NULL'), 2);
   });
 
+  test('stores the project name on new requests, and rewrites the old requests when the rules change', () => {
+    const requestDatabase = new RequestDatabase(databasePath);
+    const oldProxiedRequestId = requestDatabase.insertStartedRequest(startedRequest(Buffer.alloc(0)));
+    assert.equal(requestDatabase.readProxiedRequest(oldProxiedRequestId)?.project_name, 'project');
+
+    assert.equal(requestDatabase.applyProjectNames((projectPath) => `first ${projectPath}`), 1);
+    assert.equal(requestDatabase.readProxiedRequest(oldProxiedRequestId)?.project_name, 'first /Users/test/project');
+    assert.equal(requestDatabase.applyProjectNames((projectPath) => `first ${projectPath}`), 0);
+
+    const newProxiedRequestId = requestDatabase.insertStartedRequest(startedRequest(Buffer.alloc(0)));
+    assert.equal(requestDatabase.readProxiedRequest(newProxiedRequestId)?.project_name, 'first /Users/test/project');
+
+    assert.equal(requestDatabase.applyProjectNames(() => 'second'), 2);
+    assert.equal(requestDatabase.readProxiedRequest(oldProxiedRequestId)?.project_name, 'second');
+    assert.equal(requestDatabase.readProxiedRequest(oldProxiedRequestId)?.project_path, '/Users/test/project');
+    assert.deepEqual(requestDatabase.listProxiedRequests({ projectName: 'second' }, { limit: 10 }).length, 2);
+    assert.equal(requestDatabase.listProxiedRequests({ projectName: 'first' }, { limit: 10 }).length, 0);
+    assert.equal(requestDatabase.listSessions('second', 10)[0]?.project_name, 'second');
+    assert.equal(requestDatabase.listSessions('first', 10).length, 0);
+    requestDatabase.close();
+  });
+
+  test('gives a database made before project names a project_name column', () => {
+    new RequestDatabase(databasePath).close();
+    const olderDatabase = new DatabaseSync(databasePath);
+    olderDatabase.exec('DROP INDEX proxied_requests_project_name; ALTER TABLE proxied_requests DROP COLUMN project_name');
+    olderDatabase.close();
+
+    const requestDatabase = new RequestDatabase(databasePath);
+    const proxiedRequestId = requestDatabase.insertStartedRequest(startedRequest(Buffer.alloc(0)));
+    assert.equal(requestDatabase.readProxiedRequest(proxiedRequestId)?.project_name, 'project');
+    requestDatabase.close();
+  });
+
   test('stores an empty body as no body', () => {
     const requestDatabase = new RequestDatabase(databasePath);
     const proxiedRequestId = requestDatabase.insertStartedRequest(startedRequest(Buffer.alloc(0)));

@@ -45,6 +45,7 @@ export interface ProxiedRequestSummary {
   is_streaming: number;
   session_id: string | null;
   project_path: string | null;
+  project_name: string | null;
   /** 1 when the request carried no environment block and `project_path` comes from an earlier request in its session. */
   is_project_path_inherited: number;
   status_code: number | null;
@@ -86,7 +87,7 @@ export interface ProxiedRequestFilters {
   model: string;
   routeName: string;
   status: string;
-  projectPath: string;
+  projectName: string;
   sessionId: string;
   startedFrom: string;
   startedTo: string;
@@ -97,7 +98,7 @@ export const emptyProxiedRequestFilters: ProxiedRequestFilters = {
   model: '',
   routeName: '',
   status: '',
-  projectPath: '',
+  projectName: '',
   sessionId: '',
   startedFrom: '',
   startedTo: '',
@@ -113,12 +114,13 @@ export interface RequestFilterOptions {
   /** Models with a request in the last 30 days come first. */
   models: Array<{ model: string; has_recent_traffic: number }>;
   routeNames: string[];
-  projectPaths: string[];
+  projectNames: string[];
 }
 
 export interface ClaudeCodeSession {
   session_id: string;
   project_path: string | null;
+  project_name: string | null;
   first_started_at: string;
   last_started_at: string;
   request_count: number;
@@ -188,7 +190,7 @@ export const claudeProxyApi = {
     requestApi<ProxiedRequestCostTotals>(`proxied-request-cost-totals?${buildFilterQueryParameters(filters)}`),
   readProxiedRequest: (proxiedRequestId: number) => requestApi<ProxiedRequestDetail>(`proxied-requests/${proxiedRequestId}`),
   readRequestFilterOptions: () => requestApi<RequestFilterOptions>('request-filter-options'),
-  listSessions: (projectPath: string) =>
-    requestApi<ClaudeCodeSession[]>(`sessions?${new URLSearchParams(projectPath ? { projectPath } : {})}`),
+  listSessions: (projectName: string) =>
+    requestApi<ClaudeCodeSession[]>(`sessions?${new URLSearchParams(projectName ? { projectName } : {})}`),
   readCostSummary: (dayCount: number) => requestApi<DailyRouteCost[]>(`cost-summary?days=${dayCount}`),
 };

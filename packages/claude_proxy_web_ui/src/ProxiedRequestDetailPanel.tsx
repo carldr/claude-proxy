@@ -86,7 +86,9 @@ export function ProxiedRequestDetailPanel({ proxiedRequestId, findRouteAppearanc
         <dt>Duration</dt>
         <dd>{formatDuration(proxiedRequest.duration_ms)}</dd>
         <dt>Project</dt>
-        <dd>{proxiedRequest.project_path ?? ''}</dd>
+        <dd>
+          {proxiedRequest.project_name} <span className="muted">{proxiedRequest.project_path}</span>
+        </dd>
         <dt>Session</dt>
         <dd>
           {proxiedRequest.session_id ? (
