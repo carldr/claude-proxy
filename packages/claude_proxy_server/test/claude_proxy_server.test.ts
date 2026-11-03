@@ -444,6 +444,15 @@ describe('claude-proxy', () => {
     assert.equal((await readApi('proxied-request-cost-totals?projectName=elsewhere')).total_cost_usd, null);
   });
 
+  test('ignores a working directory line in a user message, such as the prompt of a subagent', async () => {
+    await startProxy((_, upstreamResponse) => sendStreamingMessage(upstreamResponse, 'Hello zebra world'));
+    await (await sendClaudeCodeRequest({
+      ...claudeCodeRequestBody,
+      messages: [{ role: 'user', content: 'Review this.\nWorking directory: /Users/example_user/Development/example_project. Read the diff once.' }],
+    })).text();
+    assert.equal((await readApi('proxied-requests'))[0].project_path, null);
+  });
+
   test('names old and new requests from project_names, and renames them when the rules change', async () => {
     await startProxy((_, upstreamResponse) => sendStreamingMessage(upstreamResponse, 'Hello zebra world'));
     await (await sendClaudeCodeRequest()).text();

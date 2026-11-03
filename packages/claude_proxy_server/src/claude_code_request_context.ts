@@ -70,10 +70,12 @@ function extractSessionId(requestHeaders: IncomingHttpHeaders, metadata: unknown
 /**
  * Finds the "Primary working directory" line of Claude Code's environment block. Claude Code puts that block
  * in the top-level `system` field or in an early `role: "system"` message, so the search stops at the first match.
+ * The search skips user messages, because the prompt of a subagent can hold a working directory line.
  * The search skips environment update sections, so the project stays the directory that Claude Code started in.
  */
 function extractProjectPath(system: unknown, messages: Array<Record<string, unknown>>): string | null {
-  for (const content of [system, ...messages.map((message) => message.content)]) {
+  const systemMessages = messages.filter((message) => message.role === 'system');
+  for (const content of [system, ...systemMessages.map((message) => message.content)]) {
     const contentText = readContentText(content).replace(environmentUpdatePattern, '');
     const workingDirectory = workingDirectoryPattern.exec(contentText)?.[1]?.trim();
     if (workingDirectory) return workingDirectory;
