@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { claudeProxyApi, type ClaudeCodeSession } from './claude_proxy_api.ts';
-import { formatCostUsd, formatTimestamp } from './display_formatting.ts';
+import { claudeProxyApi, unattributedProjectFilterValue, type ClaudeCodeSession } from './claude_proxy_api.ts';
+import { formatCostUsd, formatProjectLabel, formatTimestamp } from './display_formatting.ts';
 
 /** Lists Claude Code sessions, so a past conversation can be found by project and by its first prompt. */
 export function SessionsView({ onShowSessionRequests }: { onShowSessionRequests: (sessionId: string) => void }) {
@@ -22,6 +22,7 @@ export function SessionsView({ onShowSessionRequests }: { onShowSessionRequests:
       <div className="view-toolbar">
         <select aria-label="Project" value={projectName} onChange={(changeEvent) => setProjectName(changeEvent.target.value)}>
           <option value="">All projects</option>
+          <option value={unattributedProjectFilterValue}>Unattributed</option>
           {projectNames.map((candidateName) => (
             <option key={candidateName}>{candidateName}</option>
           ))}
@@ -36,6 +37,8 @@ export function SessionsView({ onShowSessionRequests }: { onShowSessionRequests:
             <tr>
               <th>Last activity</th>
               <th>Project</th>
+              <th>Starting branch</th>
+              <th className="source-hostname">Hostname</th>
               <th>First prompt</th>
               <th className="numeric">Requests</th>
               <th className="numeric">Cost</th>
@@ -47,7 +50,11 @@ export function SessionsView({ onShowSessionRequests }: { onShowSessionRequests:
               <tr key={session.session_id} data-clickable="true" tabIndex={0} onClick={() => onShowSessionRequests(session.session_id)}
                 onKeyDown={(keyEvent) => keyEvent.key === 'Enter' && onShowSessionRequests(session.session_id)}>
                 <td>{formatTimestamp(session.last_started_at)}</td>
-                <td className="project-name" title={session.project_path ?? ''}>{session.project_name}</td>
+                <td className={session.project_name ? 'project-name' : 'project-name muted'} title={session.project_path ?? ''}>
+                  {formatProjectLabel(session.project_name, session.project_path)}
+                </td>
+                <td>{session.starting_branch}</td>
+                <td className="source-hostname">{session.source_hostname}</td>
                 <td className="prompt-preview" title={session.first_user_text ?? ''}>
                   {session.first_user_text}
                 </td>

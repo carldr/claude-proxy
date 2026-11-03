@@ -46,6 +46,8 @@ export interface ProxiedRequestSummary {
   session_id: string | null;
   project_path: string | null;
   project_name: string | null;
+  starting_branch: string | null;
+  source_hostname: string | null;
   /** 1 when the request carried no environment block and `project_path` comes from an earlier request in its session. */
   is_project_path_inherited: number;
   status_code: number | null;
@@ -88,10 +90,17 @@ export interface ProxiedRequestFilters {
   routeName: string;
   status: string;
   projectName: string;
+  /** "1" selects the requests with no project name. */
+  isProjectUnattributed: string;
+  startingBranch: string;
+  sourceHostname: string;
   sessionId: string;
   startedFrom: string;
   startedTo: string;
 }
+
+/** The value of the "Unattributed" option in a project filter. A project name always holds a "/", so this value is not a project name. */
+export const unattributedProjectFilterValue = 'unattributed';
 
 export const emptyProxiedRequestFilters: ProxiedRequestFilters = {
   searchText: '',
@@ -99,6 +108,9 @@ export const emptyProxiedRequestFilters: ProxiedRequestFilters = {
   routeName: '',
   status: '',
   projectName: '',
+  isProjectUnattributed: '',
+  startingBranch: '',
+  sourceHostname: '',
   sessionId: '',
   startedFrom: '',
   startedTo: '',
@@ -115,12 +127,16 @@ export interface RequestFilterOptions {
   models: Array<{ model: string; has_recent_traffic: number }>;
   routeNames: string[];
   projectNames: string[];
+  startingBranches: string[];
+  sourceHostnames: string[];
 }
 
 export interface ClaudeCodeSession {
   session_id: string;
   project_path: string | null;
   project_name: string | null;
+  starting_branch: string | null;
+  source_hostname: string | null;
   first_started_at: string;
   last_started_at: string;
   request_count: number;
@@ -190,7 +206,15 @@ export const claudeProxyApi = {
     requestApi<ProxiedRequestCostTotals>(`proxied-request-cost-totals?${buildFilterQueryParameters(filters)}`),
   readProxiedRequest: (proxiedRequestId: number) => requestApi<ProxiedRequestDetail>(`proxied-requests/${proxiedRequestId}`),
   readRequestFilterOptions: () => requestApi<RequestFilterOptions>('request-filter-options'),
-  listSessions: (projectName: string) =>
-    requestApi<ClaudeCodeSession[]>(`sessions?${new URLSearchParams(projectName ? { projectName } : {})}`),
+  listSessions: (projectFilterValue: string) =>
+    requestApi<ClaudeCodeSession[]>(
+      `sessions?${new URLSearchParams(
+        projectFilterValue === unattributedProjectFilterValue
+          ? { isProjectUnattributed: '1' }
+          : projectFilterValue
+            ? { projectName: projectFilterValue }
+            : {},
+      )}`,
+    ),
   readCostSummary: (dayCount: number) => requestApi<DailyRouteCost[]>(`cost-summary?days=${dayCount}`),
 };

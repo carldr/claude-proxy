@@ -5,7 +5,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { zstdCompressSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, test } from 'node:test';
-import { RequestDatabase, type CompletedProxiedRequest, type StartedProxiedRequest } from '../src/request_database.ts';
+import { RequestDatabase, type CompletedProxiedRequest, type ProxiedRequestFilters, type StartedProxiedRequest } from '../src/request_database.ts';
 
 const largeSafeguards = { rules: 'x'.repeat(5000) };
 const largeTools = [{ name: 'Read', description: 'y'.repeat(5000) }];
@@ -57,7 +57,9 @@ function startedRequest(requestBody: Buffer, startedAt = new Date().toISOString(
     isStreaming: true,
     sessionId: 'session-1',
     projectPath: '/Users/test/project',
-    clientProjectName: null,
+    projectName: null,
+    startingBranch: null,
+    sourceHostname: null,
     previousUpstreamRequestId: null,
     requestHeadersJson: '{"user-agent":"claude-cli"}',
     requestBody,
@@ -125,37 +127,66 @@ describe('request bodies in the request database', () => {
     assert.equal(countRows('proxied_requests', 'WHERE request_body_zstd IS NOT NULL'), 2);
   });
 
-  test('stores the project name on new requests, and rewrites the old requests when the rules change', () => {
+  test('stores the project, starting branch and source hostname that the client sends, and filters by them', () => {
     const requestDatabase = new RequestDatabase(databasePath);
-    const oldProxiedRequestId = requestDatabase.insertStartedRequest(startedRequest(Buffer.alloc(0)));
-    assert.equal(requestDatabase.readProxiedRequest(oldProxiedRequestId)?.project_name, 'project');
+    const attributedRequestId = requestDatabase.insertStartedRequest({
+      ...startedRequest(Buffer.alloc(0)),
+      projectName: 'example-org/example-repo',
+      startingBranch: 'feature/login',
+      sourceHostname: 'example-host',
+    });
+    const unattributedRequestId = requestDatabase.insertStartedRequest({ ...startedRequest(Buffer.alloc(0)), sessionId: 'session-2' });
 
-    assert.equal(requestDatabase.applyProjectNames((projectPath) => `first ${projectPath}`), 1);
-    assert.equal(requestDatabase.readProxiedRequest(oldProxiedRequestId)?.project_name, 'first /Users/test/project');
-    assert.equal(requestDatabase.applyProjectNames((projectPath) => `first ${projectPath}`), 0);
+    const attributedRequest = requestDatabase.readProxiedRequest(attributedRequestId);
+    assert.equal(attributedRequest?.project_name, 'example-org/example-repo');
+    assert.equal(attributedRequest?.starting_branch, 'feature/login');
+    assert.equal(attributedRequest?.source_hostname, 'example-host');
+    assert.equal(attributedRequest?.project_path, '/Users/test/project');
 
-    const newProxiedRequestId = requestDatabase.insertStartedRequest(startedRequest(Buffer.alloc(0)));
-    assert.equal(requestDatabase.readProxiedRequest(newProxiedRequestId)?.project_name, 'first /Users/test/project');
+    const unattributedRequest = requestDatabase.readProxiedRequest(unattributedRequestId);
+    assert.equal(unattributedRequest?.project_name, null);
+    assert.equal(unattributedRequest?.starting_branch, null);
+    assert.equal(unattributedRequest?.source_hostname, null);
+    assert.equal(unattributedRequest?.project_path, '/Users/test/project');
 
-    assert.equal(requestDatabase.applyProjectNames(() => 'second'), 2);
-    assert.equal(requestDatabase.readProxiedRequest(oldProxiedRequestId)?.project_name, 'second');
-    assert.equal(requestDatabase.readProxiedRequest(oldProxiedRequestId)?.project_path, '/Users/test/project');
-    assert.deepEqual(requestDatabase.listProxiedRequests({ projectName: 'second' }, { limit: 10 }).length, 2);
-    assert.equal(requestDatabase.listProxiedRequests({ projectName: 'first' }, { limit: 10 }).length, 0);
-    assert.equal(requestDatabase.listSessions('second', 10)[0]?.project_name, 'second');
-    assert.equal(requestDatabase.listSessions('first', 10).length, 0);
+    const listRequestIds = (filters: ProxiedRequestFilters) => requestDatabase.listProxiedRequests(filters, { limit: 10 }).map((request) => request.id);
+    assert.deepEqual(listRequestIds({ projectName: 'example-org/example-repo' }), [attributedRequestId]);
+    assert.deepEqual(listRequestIds({ startingBranch: 'feature/login' }), [attributedRequestId]);
+    assert.deepEqual(listRequestIds({ sourceHostname: 'example-host' }), [attributedRequestId]);
+    assert.deepEqual(listRequestIds({ isProjectUnattributed: true }), [unattributedRequestId]);
+
+    assert.deepEqual(requestDatabase.listSessions({ projectName: 'example-org/example-repo' }, 10).map((session) => session.session_id), ['session-1']);
+    assert.deepEqual(requestDatabase.listSessions({ isProjectUnattributed: true }, 10).map((session) => session.session_id), ['session-2']);
+    assert.equal(requestDatabase.listSessions({ projectName: 'example-org/example-repo' }, 10)[0]?.source_hostname, 'example-host');
+    assert.equal(requestDatabase.listSessions({ projectName: 'example-org/example-repo' }, 10)[0]?.starting_branch, 'feature/login');
+
+    const filterOptions = requestDatabase.listRequestFilterOptions(new Date().toISOString());
+    assert.deepEqual(filterOptions.projectNames, ['example-org/example-repo']);
+    assert.deepEqual(filterOptions.startingBranches, ['feature/login']);
+    assert.deepEqual(filterOptions.sourceHostnames, ['example-host']);
     requestDatabase.close();
   });
 
-  test('gives a database made before project names a project_name column', () => {
-    new RequestDatabase(databasePath).close();
+  test('gives a database made before the attribution columns those columns, and leaves its rows unattributed', () => {
+    const firstDatabase = new RequestDatabase(databasePath);
+    const oldProxiedRequestId = firstDatabase.insertStartedRequest(startedRequest(Buffer.alloc(0)));
+    firstDatabase.close();
     const olderDatabase = new DatabaseSync(databasePath);
-    olderDatabase.exec('DROP INDEX proxied_requests_project_name; ALTER TABLE proxied_requests DROP COLUMN project_name');
+    olderDatabase.exec(`
+      DROP INDEX proxied_requests_project_name;
+      DROP INDEX proxied_requests_starting_branch;
+      DROP INDEX proxied_requests_source_hostname;
+      ALTER TABLE proxied_requests DROP COLUMN project_name;
+      ALTER TABLE proxied_requests DROP COLUMN starting_branch;
+      ALTER TABLE proxied_requests DROP COLUMN source_hostname;
+    `);
     olderDatabase.close();
 
     const requestDatabase = new RequestDatabase(databasePath);
-    const proxiedRequestId = requestDatabase.insertStartedRequest(startedRequest(Buffer.alloc(0)));
-    assert.equal(requestDatabase.readProxiedRequest(proxiedRequestId)?.project_name, 'project');
+    const oldRequest = requestDatabase.readProxiedRequest(oldProxiedRequestId);
+    assert.equal(oldRequest?.project_name, null);
+    assert.equal(oldRequest?.starting_branch, null);
+    assert.equal(oldRequest?.source_hostname, null);
     requestDatabase.close();
   });
 
@@ -244,7 +275,7 @@ describe('request bodies in the request database', () => {
     assert.equal(migratedRequest?.response_headers_json, '{"b":"2"}');
     assert.equal(migratedRequest?.user_text_preview, 'An earlier zebra prompt');
     assert.equal(requestDatabase.listProxiedRequests({ searchText: 'zebra' }, { limit: 10 }).length, 1);
-    assert.equal(requestDatabase.listSessions(undefined, 10)[0].first_user_text, 'An earlier zebra prompt');
+    assert.equal(requestDatabase.listSessions({}, 10)[0]!.first_user_text, 'An earlier zebra prompt');
     requestDatabase.close();
     assert.equal(countRows('sqlite_schema', "WHERE name = 'proxied_request_search'"), 0);
   });

@@ -89,6 +89,10 @@ export function ProxiedRequestDetailPanel({ proxiedRequestId, findRouteAppearanc
         <dd>
           {proxiedRequest.project_name} <span className="muted">{proxiedRequest.project_path}</span>
         </dd>
+        <dt>Starting branch</dt>
+        <dd>{proxiedRequest.starting_branch}</dd>
+        <dt>Hostname</dt>
+        <dd>{proxiedRequest.source_hostname}</dd>
         <dt>Session</dt>
         <dd>
           {proxiedRequest.session_id ? (

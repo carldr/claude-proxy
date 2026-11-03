@@ -9,14 +9,6 @@
 # The first matching route wins.
 #
 # default_subscription_account: The account for a project that no route matches, and for a request with no project.
-#
-# project_names: The names that the web UI shows and filters by. In "project_path_pattern", "*" matches inside one directory,
-# and "{project_name}" matches one directory and names the project. A rule without "{project_name}" has a "project_name" key.
-# A pattern also covers every subdirectory of a match. The first matching rule wins. Without a match, the last directory is the name.
-# Example:
-# project_names:
-#   - project_path_pattern: /srv/roy/*/*/{project_name}/@
-#   - project_path_pattern: /Users/example_user/Development/games/{project_name}
 subscription_accounts:
   - name: Work
     colour: "#a1c63d"

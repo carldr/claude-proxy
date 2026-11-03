@@ -7,7 +7,11 @@ export interface ClaudeCodeRequestContext {
   /** The directory Claude Code started in. Null when the request carries no environment block. */
   projectPath: string | null;
   /** The value of the `X-Claude-Proxy-Project` header. Null when the client does not send it. */
-  clientProjectName: string | null;
+  projectName: string | null;
+  /** The value of the `X-Claude-Proxy-Starting-Branch` header. Null when the client does not send it. */
+  startingBranch: string | null;
+  /** The value of the `X-Claude-Proxy-Hostname` header. Null when the client does not send it. */
+  sourceHostname: string | null;
   /**
    * The upstream `request-id` of the previous request in the same conversation, from `cc_prev_req` in the billing
    * header. Claude Code 2.1.304 sends only the new messages after the first request, without the environment block.
@@ -22,8 +26,12 @@ export interface ClaudeCodeRequestContext {
   lastUserMessageToolResultText: string;
 }
 
-/** The header in which a client names its project. It is for the proxy only, so the proxy does not forward it. */
-export const clientProjectNameHeaderName = 'x-claude-proxy-project';
+const projectNameHeaderName = 'x-claude-proxy-project';
+const startingBranchHeaderName = 'x-claude-proxy-starting-branch';
+const sourceHostnameHeaderName = 'x-claude-proxy-hostname';
+
+/** The headers in which a client describes its session. They are for the proxy only, so the proxy does not forward them. */
+export const clientAttributionHeaderNames = [projectNameHeaderName, startingBranchHeaderName, sourceHostnameHeaderName];
 
 const sessionIdPattern =/session_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/;
 /**
@@ -51,16 +59,18 @@ export function extractClaudeCodeRequestContext(
     isStreaming: requestFields.stream === true,
     sessionId: extractSessionId(requestHeaders, requestFields.metadata),
     projectPath: extractProjectPath(requestFields.system, messages),
-    clientProjectName: extractClientProjectName(requestHeaders),
+    projectName: readClientAttributionHeader(requestHeaders, projectNameHeaderName),
+    startingBranch: readClientAttributionHeader(requestHeaders, startingBranchHeaderName),
+    sourceHostname: readClientAttributionHeader(requestHeaders, sourceHostnameHeaderName),
     previousUpstreamRequestId: previousUpstreamRequestIdPattern.exec(readContentText(requestFields.system))?.[1] ?? null,
     lastUserMessageText: extractLastUserMessageText(messages),
     lastUserMessageToolResultText: extractLastUserMessageToolResultText(messages),
   };
 }
 
-function extractClientProjectName(requestHeaders: IncomingHttpHeaders): string | null {
-  const clientProjectNameHeader = requestHeaders[clientProjectNameHeaderName];
-  return typeof clientProjectNameHeader === 'string' ? clientProjectNameHeader.trim() || null : null;
+function readClientAttributionHeader(requestHeaders: IncomingHttpHeaders, headerName: string): string | null {
+  const headerValue = requestHeaders[headerName];
+  return typeof headerValue === 'string' ? headerValue.trim() || null : null;
 }
 
 function extractSessionId(requestHeaders: IncomingHttpHeaders, metadata: unknown): string | null {

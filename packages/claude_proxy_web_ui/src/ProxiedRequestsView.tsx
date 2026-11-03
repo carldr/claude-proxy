@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   claudeProxyApi,
+  unattributedProjectFilterValue,
   type ProxiedRequestCostTotals,
   type ProxiedRequestFilters,
   type ProxiedRequestSummary,
@@ -9,6 +10,7 @@ import {
 import {
   formatCostUsd,
   formatDuration,
+  formatProjectLabel,
   formatTimestamp,
   formatTokenCount,
   totalInputTokens,
@@ -37,7 +39,7 @@ export function ProxiedRequestsView({ filters, onFiltersChange, findRouteAppeara
   const [hasOlderRequests, setHasOlderRequests] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
   const [costTotals, setCostTotals] = useState<ProxiedRequestCostTotals | null>(null);
-  const [filterOptions, setFilterOptions] = useState<RequestFilterOptions>({ models: [], routeNames: [], projectNames: [] });
+  const [filterOptions, setFilterOptions] = useState<RequestFilterOptions>({ models: [], routeNames: [], projectNames: [], startingBranches: [], sourceHostnames: [] });
   const [selectedRequestId, setSelectedRequestId] = useState<number | null>(null);
   const [searchTextDraft, setSearchTextDraft] = useState(filters.searchText);
 
@@ -99,10 +101,34 @@ export function ProxiedRequestsView({ filters, onFiltersChange, findRouteAppeara
             value={searchTextDraft}
             onChange={(changeEvent) => setSearchTextDraft(changeEvent.target.value)}
           />
-          <select aria-label="Project" value={filters.projectName} onChange={(changeEvent) => updateFilter('projectName', changeEvent.target.value)}>
+          <select
+            aria-label="Project"
+            value={filters.isProjectUnattributed ? unattributedProjectFilterValue : filters.projectName}
+            onChange={(changeEvent) => {
+              const isUnattributedOption = changeEvent.target.value === unattributedProjectFilterValue;
+              onFiltersChange({
+                ...filters,
+                projectName: isUnattributedOption ? '' : changeEvent.target.value,
+                isProjectUnattributed: isUnattributedOption ? '1' : '',
+              });
+            }}
+          >
             <option value="">All projects</option>
+            <option value={unattributedProjectFilterValue}>Unattributed</option>
             {filterOptions.projectNames.map((projectName) => (
               <option key={projectName}>{projectName}</option>
+            ))}
+          </select>
+          <select aria-label="Starting branch" value={filters.startingBranch} onChange={(changeEvent) => updateFilter('startingBranch', changeEvent.target.value)}>
+            <option value="">All starting branches</option>
+            {filterOptions.startingBranches.map((startingBranch) => (
+              <option key={startingBranch}>{startingBranch}</option>
+            ))}
+          </select>
+          <select aria-label="Hostname" value={filters.sourceHostname} onChange={(changeEvent) => updateFilter('sourceHostname', changeEvent.target.value)}>
+            <option value="">All hostnames</option>
+            {filterOptions.sourceHostnames.map((sourceHostname) => (
+              <option key={sourceHostname}>{sourceHostname}</option>
             ))}
           </select>
           <select aria-label="Model" value={filters.model} onChange={(changeEvent) => updateFilter('model', changeEvent.target.value)}>
@@ -170,6 +196,8 @@ export function ProxiedRequestsView({ filters, onFiltersChange, findRouteAppeara
                   <th className="centred">Route</th>
                   <th>Model</th>
                   <th>Project</th>
+                  <th>Starting branch</th>
+                  <th className="source-hostname">Hostname</th>
                   <th>Prompt</th>
                   <th className="numeric">Input</th>
                   <th className="numeric">Output</th>
@@ -198,11 +226,13 @@ export function ProxiedRequestsView({ filters, onFiltersChange, findRouteAppeara
                     </td>
                     <td>{proxiedRequest.model ?? <span className="muted">{proxiedRequest.request_path}</span>}</td>
                     <td
-                      className={proxiedRequest.is_project_path_inherited ? 'project-name muted' : 'project-name'}
+                      className={proxiedRequest.project_name ? 'project-name' : 'project-name muted'}
                       title={proxiedRequest.is_project_path_inherited ? `${proxiedRequest.project_path} (from an earlier request in the session)` : (proxiedRequest.project_path ?? '')}
                     >
-                      {proxiedRequest.project_name}
+                      {formatProjectLabel(proxiedRequest.project_name, proxiedRequest.project_path)}
                     </td>
+                    <td>{proxiedRequest.starting_branch}</td>
+                    <td className="source-hostname">{proxiedRequest.source_hostname}</td>
                     <td className="prompt-preview" title={proxiedRequest.user_text_preview ?? ''}>
                       {proxiedRequest.user_text_preview || <span className="muted">{proxiedRequest.stop_reason === null ? '' : 'Tool results'}</span>}
                     </td>

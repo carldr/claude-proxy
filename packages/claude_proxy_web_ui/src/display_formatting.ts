@@ -28,6 +28,11 @@ export function formatDuration(durationMs: number | null): string {
   return `${Math.floor(durationMs / 60_000)} min ${Math.round((durationMs % 60_000) / 1000)} s`;
 }
 
+/** Shows the project name of a request or a session. Without a project name, it shows the last two directories of the project path. */
+export function formatProjectLabel(projectName: string | null, projectPath: string | null): string {
+  return projectName ?? (projectPath ?? '').split('/').filter(Boolean).slice(-2).join('/');
+}
+
 export function totalInputTokens(request: {
   input_tokens: number | null;
   cache_creation_5m_input_tokens: number | null;

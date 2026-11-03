@@ -508,3 +508,9 @@ details > summary {
     display: none;
   }
 }
+
+@media (max-width: 1024px) {
+  .data-table .source-hostname {
+    display: none;
+  }
+}

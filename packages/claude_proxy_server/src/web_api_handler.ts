@@ -87,6 +87,9 @@ export async function handleWebApiRequest(
     routeName: readQueryParameter('routeName'),
     status: readQueryParameter('status'),
     projectName: readQueryParameter('projectName'),
+    isProjectUnattributed: readQueryParameter('isProjectUnattributed') === '1',
+    startingBranch: readQueryParameter('startingBranch'),
+    sourceHostname: readQueryParameter('sourceHostname'),
     sessionId: readQueryParameter('sessionId'),
     searchText: readQueryParameter('searchText'),
   });
@@ -133,7 +136,7 @@ export async function handleWebApiRequest(
     }
 
     if (clientRequest.method === 'GET' && apiPath === 'sessions') {
-      const sessions = requestDatabase.listSessions(readQueryParameter('projectName'),Math.min(Number(readQueryParameter('limit') ?? 200), 1000));
+      const sessions = requestDatabase.listSessions({ projectName: readQueryParameter('projectName'), isProjectUnattributed: readQueryParameter('isProjectUnattributed') === '1' }, Math.min(Number(readQueryParameter('limit') ?? 200), 1000));
       return sendJson(clientResponse, 200, sessions);
     }
 

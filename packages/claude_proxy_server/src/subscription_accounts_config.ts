@@ -1,5 +1,4 @@
 import path from 'node:path';
-import { buildProjectNameRule, type ProjectNameRule } from './project_name_rules.ts';
 
 export interface SubscriptionAccount {
   name: string;
@@ -20,7 +19,6 @@ export interface SubscriptionAccountsConfig {
   subscriptionAccounts: SubscriptionAccount[];
   projectRoutes: ProjectRoute[];
   defaultSubscriptionAccountName: string | null;
-  projectNameRules: ProjectNameRule[];
 }
 
 const defaultFailoverUtilization = 1;
@@ -29,7 +27,6 @@ export const emptySubscriptionAccountsConfig: SubscriptionAccountsConfig = {
   subscriptionAccounts: [],
   projectRoutes: [],
   defaultSubscriptionAccountName: null,
-  projectNameRules: [],
 };
 
 /** Validates the parsed contents of `subscription_accounts.yml`. Each project route pattern must be an absolute path. */
@@ -40,7 +37,6 @@ export function parseSubscriptionAccountsConfig(yamlValue: unknown): Subscriptio
     project_routes?: unknown;
     default_subscription_account?: unknown;
     failover_utilization?: unknown;
-    project_names?: unknown;
   };
 
   if (yamlObject.failover_utilization !== undefined) {
@@ -115,13 +111,7 @@ export function parseSubscriptionAccountsConfig(yamlValue: unknown): Subscriptio
     }
   }
 
-  const projectNameRules = readEntries('project_names', yamlObject.project_names).map((ruleEntry, ruleIndex) => {
-    const entryPath = `project_names[${ruleIndex}]`;
-    const projectName = ruleEntry?.project_name === undefined ? null : readRequiredString(ruleEntry, entryPath, 'project_name');
-    return buildProjectNameRule(readRequiredString(ruleEntry, entryPath, 'project_path_pattern'), projectName, entryPath);
-  });
-
-  return { subscriptionAccounts, projectRoutes, defaultSubscriptionAccountName, projectNameRules };
+  return { subscriptionAccounts, projectRoutes, defaultSubscriptionAccountName };
 }
 
 /**

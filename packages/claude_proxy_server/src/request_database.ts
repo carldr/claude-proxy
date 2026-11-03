@@ -2,14 +2,10 @@ import { createHash } from 'node:crypto';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 import { extractClaudeCodeRequestContext } from './claude_code_request_context.ts';
-import { findProjectName } from './project_name_rules.ts';
 
 /** A `subscription` route forwards Claude Code's own token. Only rows from earlier versions of the proxy have `api_key`. */
 export type RouteKind = 'subscription_account' | 'subscription' | 'api_key' | 'passthrough';
 export type ClientAuthKind = 'oauth' | 'api_key' | 'none';
-
-/** Names the project of a request from its project path and the name that its client sends. */
-export type ProjectNameFinder = (projectPath: string | null, clientProjectName: string | null) => string | null;
 
 export interface StartedProxiedRequest {
   startedAt: string;
@@ -22,7 +18,11 @@ export interface StartedProxiedRequest {
   /** Null when the request carries no environment block. The database then finds the project with `previousUpstreamRequestId` or the session. */
   projectPath: string | null;
   /** The value of the `X-Claude-Proxy-Project` header. Null when the client does not send it. */
-  clientProjectName: string | null;
+  projectName: string | null;
+  /** The value of the `X-Claude-Proxy-Starting-Branch` header. Null when the client does not send it. */
+  startingBranch: string | null;
+  /** The value of the `X-Claude-Proxy-Hostname` header. Null when the client does not send it. */
+  sourceHostname: string | null;
   previousUpstreamRequestId: string | null;
   requestHeadersJson: string;
   requestBody: Buffer;
@@ -71,6 +71,10 @@ export interface ProxiedRequestFilters {
   /** "2xx", "4xx", "5xx", "pending", or one status code such as "429". */
   status?: string;
   projectName?: string;
+  /** True selects the requests with no project name. */
+  isProjectUnattributed?: boolean;
+  startingBranch?: string;
+  sourceHostname?: string;
   sessionId?: string;
   searchText?: string;
 }
@@ -83,7 +87,7 @@ export interface ProxiedRequestPage {
 const proxiedRequestSummaryColumns = `
   r.id, r.started_at, r.completed_at, r.duration_ms, r.http_method, r.request_path, r.client_auth_kind,
   r.route_kind, r.route_name, r.model, r.is_streaming, r.session_id, r.project_path, r.project_name,
-  r.is_project_path_inherited, r.status_code,
+  r.starting_branch, r.source_hostname, r.is_project_path_inherited, r.status_code,
   r.error_type, r.stop_reason, r.input_tokens, r.output_tokens, r.cache_creation_5m_input_tokens,
   r.cache_creation_1h_input_tokens, r.cache_read_input_tokens, r.estimated_cost_usd,
   (SELECT COUNT(*) FROM upstream_attempts a WHERE a.proxied_request_id = r.id) AS upstream_attempt_count,
@@ -127,9 +131,6 @@ export class RequestDatabase {
    * completeRequest cannot read the request's text back. It writes the row again with this text and the response's.
    */
   private readonly searchTextOfOpenRequests = new Map<number, { userText: string; toolText: string }>();
-
-  /** Names the project of a new request. `applyProjectNames` replaces this function. */
-  private findProjectName: ProjectNameFinder = (projectPath, clientProjectName) => findProjectName([], projectPath, clientProjectName);
 
   constructor(databasePath: string) {
     this.database = new DatabaseSync(databasePath);
@@ -224,7 +225,8 @@ export class RequestDatabase {
       ['user_text_preview', 'TEXT'],
       ['contents_expired_at', 'TEXT'],
       ['project_name', 'TEXT'],
-      ['client_project_name', 'TEXT'],
+      ['starting_branch', 'TEXT'],
+      ['source_hostname', 'TEXT'],
     ]) {
       this.addMissingColumn('proxied_requests', columnName, columnType);
     }
@@ -252,8 +254,10 @@ export class RequestDatabase {
       DROP INDEX IF EXISTS proxied_requests_session_id;
       -- listRequestFilterOptions groups by model with MAX(started_at), and the model filter matches model.
       CREATE INDEX IF NOT EXISTS proxied_requests_model_started_at ON proxied_requests (model, started_at);
-      -- listRequestFilterOptions lists project_name, and the project filter matches it.
+      -- listRequestFilterOptions lists each of these columns, and the filters match them.
       CREATE INDEX IF NOT EXISTS proxied_requests_project_name ON proxied_requests (project_name);
+      CREATE INDEX IF NOT EXISTS proxied_requests_starting_branch ON proxied_requests (starting_branch);
+      CREATE INDEX IF NOT EXISTS proxied_requests_source_hostname ON proxied_requests (source_hostname);
       -- summariseProxiedRequestCosts sums estimated_cost_usd by started_at, and the date filters match started_at.
       CREATE INDEX IF NOT EXISTS proxied_requests_started_at_estimated_cost_usd ON proxied_requests (started_at, estimated_cost_usd);
       -- listSessions groups every request by session_id, and assignProjectPath finds a request of a session.
@@ -578,9 +582,10 @@ export class RequestDatabase {
       const insertResult = this.database
         .prepare(
           `INSERT INTO proxied_requests (
-            started_at, http_method, request_path, client_auth_kind, model, is_streaming, session_id, project_path, client_project_name, project_name,
+            started_at, http_method, request_path, client_auth_kind, model, is_streaming, session_id, project_path, project_name,
+            starting_branch, source_hostname,
             is_project_path_inherited, request_headers_json_zstd, request_body_zstd, request_body_layout_zstd, user_text_preview
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           startedRequest.startedAt,
@@ -591,8 +596,9 @@ export class RequestDatabase {
           startedRequest.isStreaming ? 1 : 0,
           startedRequest.sessionId,
           projectPathAssignment.projectPath,
-          startedRequest.clientProjectName,
-          this.findProjectName(projectPathAssignment.projectPath, startedRequest.clientProjectName),
+          startedRequest.projectName,
+          startedRequest.startingBranch,
+          startedRequest.sourceHostname,
           projectPathAssignment.isProjectPathInherited ? 1 : 0,
           compressText(startedRequest.requestHeadersJson),
           wholeRequestBody,
@@ -749,34 +755,6 @@ export class RequestDatabase {
       .run(settingName, settingValue);
   }
 
-  /**
-   * Names the project of every new request with this function, and writes the name of each stored request that differs.
-   * `project_path` does not change, because `claude --resume` and the project routes read it.
-   * Returns the number of requests that changed.
-   */
-  applyProjectNames(projectNameFinder: ProjectNameFinder): number {
-    this.findProjectName = projectNameFinder;
-    const projectRows = this.database
-      .prepare('SELECT DISTINCT project_path, client_project_name FROM proxied_requests')
-      .all() as Array<{ project_path: string | null; client_project_name: string | null }>;
-    const updateProjectName = this.database.prepare(
-      'UPDATE proxied_requests SET project_name = ? WHERE project_path IS ? AND client_project_name IS ? AND project_name IS NOT ?',
-    );
-    let changedRequestCount = 0;
-    this.database.exec('BEGIN');
-    try {
-      for (const { project_path: projectPath, client_project_name: clientProjectName } of projectRows) {
-        const projectName = projectNameFinder(projectPath, clientProjectName);
-        changedRequestCount += Number(updateProjectName.run(projectName, projectPath, clientProjectName, projectName).changes);
-      }
-      this.database.exec('COMMIT');
-    } catch (error) {
-      this.database.exec('ROLLBACK');
-      throw error;
-    }
-    return changedRequestCount;
-  }
-
   listProxiedRequests(filters: ProxiedRequestFilters, page: ProxiedRequestPage): Record<string, unknown>[] {
     const { whereClauses, parameters } = buildProxiedRequestConditions(filters);
     if (page.beforeId) {
@@ -855,6 +833,8 @@ export class RequestDatabase {
         .all(recentTrafficFrom),
       routeNames: listDistinct('route_name'),
       projectNames: listDistinct('project_name'),
+      startingBranches: listDistinct('starting_branch'),
+      sourceHostnames: listDistinct('source_hostname'),
     };
   }
 
@@ -876,22 +856,24 @@ export class RequestDatabase {
   }
 
   /** Lists Claude Code sessions, newest first, with the first user message of each session. */
-  listSessions(projectName: string | undefined, limit: number): Record<string, unknown>[] {
+  listSessions(filters: Pick<ProxiedRequestFilters, 'projectName' | 'isProjectUnattributed'>, limit: number): Record<string, unknown>[] {
+    const { whereClauses, parameters } = buildProxiedRequestConditions(filters);
     return this.database
       .prepare(
-        `SELECT r.session_id, MAX(r.project_path) AS project_path, MAX(r.project_name) AS project_name, MIN(r.started_at) AS first_started_at,
+        `SELECT r.session_id, MAX(r.project_path) AS project_path, MAX(r.project_name) AS project_name,
+                MAX(r.starting_branch) AS starting_branch, MAX(r.source_hostname) AS source_hostname, MIN(r.started_at) AS first_started_at,
                 MAX(r.started_at) AS last_started_at, COUNT(*) AS request_count,
                 SUM(r.estimated_cost_usd) AS estimated_cost_usd,
                 (SELECT r2.user_text_preview FROM proxied_requests r2
                   WHERE r2.session_id = r.session_id AND r2.user_text_preview != ''
                   ORDER BY r2.id LIMIT 1) AS first_user_text
          FROM proxied_requests r
-         WHERE r.session_id IS NOT NULL ${projectName ? 'AND r.project_name = ?' : ''}
+         WHERE ${['r.session_id IS NOT NULL', ...whereClauses].join(' AND ')}
          GROUP BY r.session_id
          ORDER BY last_started_at DESC
          LIMIT ?`,
       )
-      .all(...(projectName ? [projectName, limit] : [limit])) as Record<string, unknown>[];
+      .all(...parameters, limit) as Record<string, unknown>[];
   }
 
   close(): void {
@@ -913,6 +895,9 @@ function buildProxiedRequestConditions(filters: ProxiedRequestFilters): { whereC
   if (filters.model) addCondition('r.model = ?', filters.model);
   if (filters.routeName) addCondition('r.route_name = ?', filters.routeName);
   if (filters.projectName) addCondition('r.project_name = ?', filters.projectName);
+  if (filters.isProjectUnattributed) addCondition('r.project_name IS NULL');
+  if (filters.startingBranch) addCondition('r.starting_branch = ?', filters.startingBranch);
+  if (filters.sourceHostname) addCondition('r.source_hostname = ?', filters.sourceHostname);
   if (filters.sessionId) addCondition('r.session_id = ?', filters.sessionId);
   if (filters.status === 'pending') addCondition('r.completed_at IS NULL');
   else if (filters.status && /^[1-5]xx$/.test(filters.status)) {

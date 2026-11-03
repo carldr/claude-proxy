@@ -232,32 +232,22 @@ default_subscription_account: Personal
 | `project_routes` | The first route whose `project_path_pattern` matches the project wins. The pattern is a glob and must be an absolute path. `~` is not expanded. A pattern also matches every subdirectory of a matching directory. |
 | `failover_utilization` | A key of one account. It is a fraction above 0 and at most 1. The proxy avoids the account at or above this fraction of its 5-hour or weekly window. The default is 1, which means no threshold. A top-level `failover_utilization` is a validation error. |
 | `default_subscription_account` | The account for a project that no route matches, and for a request with no project. Without this key, such a request tries the accounts in file order, with each blocked account last. |
-| `project_names` | The names that the web UI shows and filters by. See [Project names](#project-names). |
 
-The project is the directory that Claude Code started in. A request without that information uses the project of the earlier request in the same session.
-
-### Project names
-
-One project can start Claude Code in many directories: a subdirectory, a local worktree, or a Roy worktree. The proxy gives each request a project name, so these directories count as one project. The rules go in `subscription_accounts.yml`:
-
-```yaml
-project_names:
-  - project_path_pattern: /srv/roy/*/*/monorepo/@apps+{project_name}
-  - project_path_pattern: /srv/roy/*/*/{project_name}/@
-  - project_path_pattern: /Users/example_user/Development/monorepo/apps/{project_name}
-  - project_path_pattern: /Users/example_user/Development/old-folder-name
-    project_name: new-name
-```
-
-- In a pattern, `*` matches inside one directory, and `{project_name}` matches one directory and names the project. A pattern without `{project_name}` needs a `project_name` key.
-- A pattern also matches every subdirectory of a match. The first matching rule wins.
-- The proxy ignores `.claude/worktrees/<name>` and `.worktrees/<name>` in a path before it applies the rules.
-- Without a match, the name is the value of the `X-Claude-Proxy-Project` request header. The proxy does not forward this header. To send it, set `ANTHROPIC_CUSTOM_HEADERS="X-Claude-Proxy-Project: <name>"` for Claude Code.
-- Without a header, the last directory of the path is the name.
-
-The proxy stores the name in the `project_name` column of each request. When the rules change, the proxy writes the new names to all stored requests. It does not serve requests during this write, which takes about 13 seconds for 80,000 requests that all change. `project_path` does not change, because `claude --resume` and `project_routes` read it.
+The directory that Claude Code started in is the `project_path` of a request. A request without that information uses the `project_path` of the earlier request in the same session. `project_routes` and the `claude --resume` commands in the web UI read `project_path`.
 
 The proxy reads `subscription_accounts.yml` again at each change, without a restart. After a parse or validation error, or when the file is missing, the proxy keeps the last valid configuration and shows the error in the web UI. When the file is broken at start, the proxy does no routing, and Claude Code uses its own token.
+
+### Attribute requests to a project
+
+A client describes its session in three request headers. The proxy stores each value on the request, and does not forward the headers to Anthropic. The proxy does not work out these values, so a request without the headers has no project. The web UI shows such a request as unattributed, with the last two directories of `project_path` dimmed.
+
+| Header | Column | Example |
+| --- | --- | --- |
+| `X-Claude-Proxy-Project` | `project_name` | `example-org/example-repo` |
+| `X-Claude-Proxy-Starting-Branch` | `starting_branch` | `feature/login` |
+| `X-Claude-Proxy-Hostname` | `source_hostname` | `example-host` |
+
+To send the headers, set `ANTHROPIC_CUSTOM_HEADERS` for Claude Code, with one header on each line. The client reads the values when `claude` starts, so `starting_branch` does not change after a checkout in a running session.
 
 ### Log in to the subscription accounts
 

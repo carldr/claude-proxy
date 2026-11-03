@@ -417,7 +417,7 @@ describe('claude-proxy', () => {
       [null, 0],
     ]);
     const requestFilterOptions = await readApi('request-filter-options');
-    assert.deepEqual(requestFilterOptions.projectNames, ['example_project']);
+    assert.deepEqual(requestFilterOptions.projectNames, []);
     assert.deepEqual(requestFilterOptions.models, [{ model: 'claude-opus-5-5', has_recent_traffic: 1 }]);
   });
 
@@ -454,40 +454,39 @@ describe('claude-proxy', () => {
     assert.equal((await readApi('proxied-requests'))[0].project_path, null);
   });
 
-  test('names a request from X-Claude-Proxy-Project, keeps the name when the rules change, and does not forward the header', async () => {
+  test('records the project, starting branch and source hostname headers, does not forward them, and serves their filters', async () => {
     await startProxy((_, upstreamResponse) => sendStreamingMessage(upstreamResponse, 'Hello zebra world'));
-    await (await sendClaudeCodeRequest(claudeCodeRequestBody, { 'x-claude-proxy-project': 'repository-name' })).text();
-    await (await sendClaudeCodeRequest({ ...claudeCodeRequestBody, metadata: {}, messages: [{ role: 'user', content: 'Hi' }] }, { 'x-claude-proxy-project': 'repository-name' })).text();
-    assert.equal(receivedRequests[0]!.headers['x-claude-proxy-project'], undefined);
-    const readProjectNames = async () => (await readApi('proxied-requests')).map((requestSummary: { project_name: string }) => requestSummary.project_name);
-    assert.deepEqual(await readProjectNames(), ['repository-name', 'repository-name']);
-
-    const subscriptionAccountsFilePath = path.join(claudeProxyDirectory, 'subscription_accounts.yml');
-    fs.writeFileSync(subscriptionAccountsFilePath, `${subscriptionAccountsYaml}project_names:\n  - { project_path_pattern: /elsewhere, project_name: unused }\n`);
-    fs.utimesSync(subscriptionAccountsFilePath, new Date(), new Date(Date.now() + 5000));
-    await (await sendClaudeCodeRequest()).text();
-    assert.deepEqual(await readProjectNames(), ['example_project', 'repository-name', 'repository-name']);
-  });
-
-  test('names old and new requests from project_names, and renames them when the rules change', async () => {
-    await startProxy((_, upstreamResponse) => sendStreamingMessage(upstreamResponse, 'Hello zebra world'));
-    await (await sendClaudeCodeRequest()).text();
-    assert.equal((await readApi('proxied-requests'))[0].project_name, 'example_project');
-
-    const subscriptionAccountsFilePath = path.join(claudeProxyDirectory, 'subscription_accounts.yml');
-    fs.writeFileSync(
-      subscriptionAccountsFilePath,
-      `${subscriptionAccountsYaml}project_names:\n  - { project_path_pattern: /Users/example_user/Development/example_project, project_name: renamed }\n`,
-    );
-    fs.utimesSync(subscriptionAccountsFilePath, new Date(), new Date(Date.now() + 5000));
+    await (await sendClaudeCodeRequest(claudeCodeRequestBody, {
+      'x-claude-proxy-project': 'example-org/example-repo/example-app',
+      'x-claude-proxy-starting-branch': 'feature/login',
+      'x-claude-proxy-hostname': 'example-host',
+    })).text();
     await (await sendClaudeCodeRequest()).text();
 
-    const requestSummaries = await readApi('proxied-requests');
-    assert.deepEqual(requestSummaries.map((requestSummary: { project_name: string }) => requestSummary.project_name), ['renamed', 'renamed']);
-    assert.equal(requestSummaries[0].project_path, '/Users/example_user/Development/example_project');
-    assert.deepEqual((await readApi('request-filter-options')).projectNames, ['renamed']);
-    assert.equal((await readApi('proxied-requests?projectName=renamed')).length, 2);
-    assert.equal((await readApi('sessions?projectName=renamed'))[0].project_name, 'renamed');
+    for (const headerName of ['x-claude-proxy-project', 'x-claude-proxy-starting-branch', 'x-claude-proxy-hostname']) {
+      assert.equal(receivedRequests[0]!.headers[headerName], undefined, headerName);
+    }
+
+    const [unattributedRequest, attributedRequest] = await readApi('proxied-requests');
+    assert.equal(attributedRequest.project_name, 'example-org/example-repo/example-app');
+    assert.equal(attributedRequest.starting_branch, 'feature/login');
+    assert.equal(attributedRequest.source_hostname, 'example-host');
+    assert.equal(unattributedRequest.project_name, null);
+    assert.equal(unattributedRequest.starting_branch, null);
+    assert.equal(unattributedRequest.source_hostname, null);
+    assert.equal(unattributedRequest.project_path, '/Users/example_user/Development/example_project');
+
+    const readRequestIds = async (query: string) => (await readApi(`proxied-requests?${query}`)).map((request: { id: number }) => request.id);
+    assert.deepEqual(await readRequestIds('projectName=example-org/example-repo/example-app'), [attributedRequest.id]);
+    assert.deepEqual(await readRequestIds('startingBranch=feature/login'), [attributedRequest.id]);
+    assert.deepEqual(await readRequestIds('sourceHostname=example-host'), [attributedRequest.id]);
+    assert.deepEqual(await readRequestIds('isProjectUnattributed=1'), [unattributedRequest.id]);
+
+    const requestFilterOptions = await readApi('request-filter-options');
+    assert.deepEqual(requestFilterOptions.projectNames, ['example-org/example-repo/example-app']);
+    assert.deepEqual(requestFilterOptions.startingBranches, ['feature/login']);
+    assert.deepEqual(requestFilterOptions.sourceHostnames, ['example-host']);
+    assert.equal((await readApi('sessions?projectName=example-org/example-repo/example-app'))[0].source_hostname, 'example-host');
   });
 
   test('fails over on a weekly rejection and stays on the other account until the reset', async () => {
