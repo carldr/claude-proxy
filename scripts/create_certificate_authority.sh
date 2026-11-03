@@ -33,7 +33,7 @@ CN = claude-proxy certificate authority for api.anthropic.com
 [certificate_authority_extensions]
 basicConstraints = critical,CA:true,pathlen:0
 keyUsage = critical,keyCertSign,cRLSign
-nameConstraints = critical,permitted;DNS:api.anthropic.com,excluded;IP:0.0.0.0/0.0.0.0,excluded;IP:::/0
+nameConstraints = critical,permitted;DNS:api.anthropic.com,excluded;IP:0.0.0.0/0.0.0.0,excluded;IP:::/::
 subjectKeyIdentifier = hash
 CONFIG
 
