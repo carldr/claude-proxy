@@ -14,6 +14,7 @@ struct SubscriptionAccountUsageWindow: Decodable {
 struct SubscriptionAccountStatus: Decodable {
     let subscriptionAccountName: String
     let colour: String
+    let emailAddress: String?
     let loginState: String
     let weeklyUtilization: Double?
     let isBlocked: Bool
@@ -161,60 +162,136 @@ func formatTimeUntil(_ isoTimestamp: String, now: Date = Date()) -> String? {
     return "\(minutes)m"
 }
 
-/// The time to the reset of the weekly window, as "Resets in 3d 23h", or nil without a known reset time.
-func describeWeeklyReset(_ subscriptionAccount: SubscriptionAccountStatus) -> String? {
-    guard let weeklyResetsAt = subscriptionAccount.usageWindows.first(where: { $0.usageWindowName == "7d" })?.resetsAt,
-          let timeUntilReset = formatTimeUntil(weeklyResetsAt) else { return nil }
-    return "Resets in \(timeUntilReset)"
+/// The label of a usage window in the panel: "5-hour", "Weekly", or the model name, such as "Fable".
+func labelUsageWindow(_ usageWindowName: String) -> String {
+    switch usageWindowName {
+    case "5h": return "5-hour"
+    case "7d": return "Weekly"
+    default: return usageWindowName
+    }
 }
 
-func describeSubscriptionAccount(_ subscriptionAccount: SubscriptionAccountStatus) -> String {
-    let name = subscriptionAccount.subscriptionAccountName
-    if subscriptionAccount.loginState == "login_required" {
-        return "\(name): log in from the web UI"
+/// Orders the windows 5h, 7d, then the model windows in the order received, as the web UI does.
+func sortUsageWindows(_ usageWindows: [SubscriptionAccountUsageWindow]) -> [SubscriptionAccountUsageWindow] {
+    let windowRank: (SubscriptionAccountUsageWindow) -> Int = { usageWindow in
+        usageWindow.usageWindowName == "5h" ? 0 : usageWindow.usageWindowName == "7d" ? 1 : 2
     }
-    if subscriptionAccount.isBlocked {
-        if let blockedUntil = subscriptionAccount.blockedUntil {
-            return "\(name): rejected, retried last until \(formatBlockedUntil(blockedUntil))"
+    return usageWindows.enumerated()
+        .sorted { (windowRank($0.element), $0.offset) < (windowRank($1.element), $1.offset) }
+        .map(\.element)
+}
+
+/// The state of the whole account, or nil when the proxy uses it as normal.
+func describeSubscriptionAccountBlock(_ subscriptionAccount: SubscriptionAccountStatus) -> String? {
+    guard subscriptionAccount.isBlocked else { return nil }
+    if let blockedUntil = subscriptionAccount.blockedUntil {
+        return "Rejected, retried last until \(formatBlockedUntil(blockedUntil))"
+    }
+    return "Avoided, at the failover limit"
+}
+
+let blockedSubscriptionAccountColour = Color(nsColor: parseHexColour(blockedSubscriptionAccountColourHex) ?? .red)
+
+/// A horizontal bar with a pale track and a fill for the fraction.
+struct UsageBar: View {
+    let fraction: Double
+    let colour: Color
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                Capsule().fill(colour.opacity(0.25))
+                Capsule().fill(colour).frame(width: geometry.size.width * min(max(fraction, 0), 1))
+            }
         }
-        return "\(name): avoided, at the failover limit"
+        .frame(height: 6)
     }
-    if let weeklyUtilization = subscriptionAccount.weeklyUtilization {
-        return "\(name): \(Int((weeklyUtilization * 100).rounded()))% weekly"
-    }
-    return "\(name): no weekly usage known"
 }
 
-struct SubscriptionAccountStatusMenu: View {
+/// One account: a header with its colour, name and email address, a row per usage window, and its state lines.
+struct SubscriptionAccountSection: View {
+    let subscriptionAccount: SubscriptionAccountStatus
+
+    var body: some View {
+        let accountColour = Color(nsColor: parseHexColour(subscriptionAccount.colour) ?? .gray)
+        let avoidedModelUsageWindowNames = subscriptionAccount.avoidedModelUsageWindowNames ?? []
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Circle().fill(accountColour).frame(width: 8, height: 8)
+                Text(subscriptionAccount.subscriptionAccountName).font(.headline)
+                Spacer()
+                if let emailAddress = subscriptionAccount.emailAddress {
+                    Text(emailAddress).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if subscriptionAccount.loginState == "login_required" {
+                Text("Log in from the web UI").font(.caption).foregroundStyle(blockedSubscriptionAccountColour)
+            } else {
+                Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 4) {
+                    ForEach(sortUsageWindows(subscriptionAccount.usageWindows), id: \.usageWindowName) { usageWindow in
+                        // The 5-hour and weekly bars are red when the proxy avoids the account, a model bar when it avoids the model.
+                        let isAvoided = usageWindow.usageWindowName == "5h" || usageWindow.usageWindowName == "7d"
+                            ? subscriptionAccount.isBlocked
+                            : avoidedModelUsageWindowNames.contains(usageWindow.usageWindowName)
+                        GridRow {
+                            Text(labelUsageWindow(usageWindow.usageWindowName)).font(.caption)
+                            UsageBar(fraction: usageWindow.utilization, colour: isAvoided ? blockedSubscriptionAccountColour : accountColour)
+                                .frame(width: 120)
+                            Text("\(Int((usageWindow.utilization * 100).rounded()))%")
+                                .font(.caption.monospacedDigit())
+                                .gridColumnAlignment(.trailing)
+                            Text(usageWindow.resetsAt.flatMap { formatTimeUntil($0) } ?? "")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .gridColumnAlignment(.trailing)
+                        }
+                    }
+                }
+                if let accountBlock = describeSubscriptionAccountBlock(subscriptionAccount) {
+                    Text(accountBlock).font(.caption).foregroundStyle(blockedSubscriptionAccountColour)
+                }
+                ForEach(avoidedModelUsageWindowNames, id: \.self) { modelUsageWindowName in
+                    Text("Avoided for \(modelUsageWindowName) requests").font(.caption).foregroundStyle(blockedSubscriptionAccountColour)
+                }
+            }
+        }
+    }
+}
+
+/// The panel that opens from the menu bar: one section per account, then the actions.
+struct SubscriptionAccountStatusPanel: View {
     @ObservedObject var subscriptionAccountStatusModel: SubscriptionAccountStatusModel
 
     var body: some View {
-        if let subscriptionAccounts = subscriptionAccountStatusModel.subscriptionAccounts {
-            // One section per account: its usage line, its reset line, then a divider.
-            ForEach(subscriptionAccounts, id: \.subscriptionAccountName) { subscriptionAccount in
-                Text(describeSubscriptionAccount(subscriptionAccount))
-                if let weeklyReset = describeWeeklyReset(subscriptionAccount) {
-                    Text(weeklyReset)
+        VStack(alignment: .leading, spacing: 10) {
+            if let subscriptionAccounts = subscriptionAccountStatusModel.subscriptionAccounts {
+                ForEach(subscriptionAccounts, id: \.subscriptionAccountName) { subscriptionAccount in
+                    SubscriptionAccountSection(subscriptionAccount: subscriptionAccount)
+                    Divider()
+                }
+            } else {
+                Text("claude-proxy does not answer on port 4100").font(.headline)
+                if let loadError = subscriptionAccountStatusModel.loadError {
+                    Text(loadError).font(.caption).foregroundStyle(.secondary)
                 }
                 Divider()
             }
-        } else {
-            Text("claude-proxy does not answer on port 4100")
-            if let loadError = subscriptionAccountStatusModel.loadError {
-                Text(loadError)
+            HStack {
+                Button("Open web UI") {
+                    NSWorkspace.shared.open(SubscriptionAccountStatusModel.readWebUiUrl())
+                }
+                Spacer()
+                Button("Refresh") {
+                    subscriptionAccountStatusModel.refresh()
+                }
+                Button("Quit") {
+                    NSApplication.shared.terminate(nil)
+                }
             }
-            Divider()
+            .controlSize(.small)
         }
-        Button("Open web UI") {
-            NSWorkspace.shared.open(SubscriptionAccountStatusModel.readWebUiUrl())
-        }
-        Button("Refresh now") {
-            subscriptionAccountStatusModel.refresh()
-        }
-        Divider()
-        Button("Quit") {
-            NSApplication.shared.terminate(nil)
-        }
+        .padding(12)
+        .frame(width: 320)
     }
 }
 
@@ -224,10 +301,11 @@ struct ClaudeProxyMenuBarApplication: App {
 
     var body: some Scene {
         MenuBarExtra {
-            SubscriptionAccountStatusMenu(subscriptionAccountStatusModel: subscriptionAccountStatusModel)
+            SubscriptionAccountStatusPanel(subscriptionAccountStatusModel: subscriptionAccountStatusModel)
         } label: {
             Image(nsImage: subscriptionAccountStatusModel.menuBarImage)
         }
+        .menuBarExtraStyle(.window)
     }
 }
 
