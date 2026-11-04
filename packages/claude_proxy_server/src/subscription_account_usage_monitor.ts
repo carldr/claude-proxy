@@ -25,7 +25,7 @@ function parseUsageReportWindow(usageWindowName: string, reportWindow: UsageRepo
 /**
  * Reads the usage windows from the answer of `/api/oauth/usage`.
  * The report gives percentages from 0 to 100. This function returns fractions from 0 to 1.
- * It skips every window that the report omits.
+ * It skips every window that the report omits, such as `five_hour: null` on an Ultra plan.
  */
 export function parseSubscriptionAccountUsageReport(usageReport: unknown): SubscriptionAccountUsageWindow[] {
   if (typeof usageReport !== 'object' || usageReport === null) return [];
@@ -100,7 +100,7 @@ export class SubscriptionAccountUsageMonitor {
     });
     if (!usageResponse.ok) throw new Error(`/api/oauth/usage answered ${usageResponse.status}`);
     const usageWindows = parseSubscriptionAccountUsageReport(await usageResponse.json());
-    this.subscriptionAccountStore.mergeUsageWindows(subscriptionAccountName, usageWindows, new Date().toISOString());
+    this.subscriptionAccountStore.replaceUsageWindows(subscriptionAccountName, usageWindows, new Date().toISOString());
     this.clearWholeAccountBlockWithRoom(subscriptionAccountName, usageWindows);
   }
 

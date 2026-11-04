@@ -71,6 +71,35 @@ test('merges usage windows by name', () => {
   });
 });
 
+test('replaces the usage windows of a poll, and deletes the windows the poll omits', () => {
+  withStore((store) => {
+    store.mergeUsageWindows(
+      'Personal',
+      [
+        { usageWindowName: '5h', utilization: 0.2, resetsAt: '2026-10-26T15:00:00Z' },
+        { usageWindowName: '7d', utilization: 0.5, resetsAt: null },
+        { usageWindowName: 'Fable', utilization: 0.4, resetsAt: null },
+      ],
+      '2026-10-26T10:00:00Z',
+    );
+    store.replaceUsageWindows(
+      'Personal',
+      [
+        { usageWindowName: '7d', utilization: 0.7, resetsAt: '2026-10-30T00:00:00Z' },
+        { usageWindowName: 'Fable', utilization: 0.4, resetsAt: null },
+      ],
+      '2026-10-26T11:00:00Z',
+    );
+    assert.deepEqual(store.readUsageWindows('Personal'), {
+      checkedAt: '2026-10-26T11:00:00Z',
+      usageWindows: [
+        { usageWindowName: '7d', utilization: 0.7, resetsAt: '2026-10-30T00:00:00Z' },
+        { usageWindowName: 'Fable', utilization: 0.4, resetsAt: null },
+      ],
+    });
+  });
+});
+
 test('expires limit blocks at blockedUntil, and does not write to the database when it reads them', () => {
   withStore((store) => {
     const now = new Date('2026-10-26T10:00:00Z');

@@ -579,6 +579,26 @@ describe('claude-proxy', () => {
       );
     });
 
+    test('removes the 5h window of an account when the usage report has five_hour: null', async () => {
+      await startProxy((receivedRequest, upstreamResponse) => {
+        if (receivedRequest.path === '/api/oauth/usage') {
+          sendJsonResponse(upstreamResponse, 200, { five_hour: null, seven_day: { utilization: 2, resets_at: '2026-11-11T10:59:59.750Z' } });
+        } else sendStreamingMessage(upstreamResponse, 'Hello from Personal');
+      }, subscriptionAccountsYamlWithFailoverUtilization);
+      storeBothTestGrants();
+      claudeProxyServer.subscriptionAccountStore.mergeUsageWindows(
+        'Personal',
+        [{ usageWindowName: '5h', utilization: 0.06, resetsAt: '2026-10-31T07:19:59.731Z' }],
+        new Date().toISOString(),
+      );
+      await claudeProxyServer.subscriptionAccountUsageMonitor.checkAllSubscriptionAccountUsage();
+      const status = await readApi('subscription-account-status');
+      assert.deepEqual(
+        status.subscriptionAccounts.find((statusAccount: any) => statusAccount.subscriptionAccountName === 'Personal').usageWindows,
+        [{ usageWindowName: '7d', utilization: 0.02, resetsAt: '2026-11-11T10:59:59.750Z' }],
+      );
+    });
+
     test('ignores a usage window whose reset time has passed', async () => {
       await startProxy(respondFromPersonalAtUtilization({}), subscriptionAccountsYamlWithFailoverUtilization);
       storeBothTestGrants();

@@ -154,21 +154,46 @@ export class SubscriptionAccountStore {
   }
 
   /** Replaces the usage windows with the same name and keeps the other usage windows. */
+  /** Writes the given usage windows and keeps the account's other windows. A response gives only part of the picture. */
   mergeUsageWindows(subscriptionAccountName: string, usageWindows: SubscriptionAccountUsageWindow[], checkedAt: string): void {
+    this.database.exec('BEGIN');
+    try {
+      this.writeUsageWindows(subscriptionAccountName, usageWindows, checkedAt);
+      this.database.exec('COMMIT');
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  /**
+   * Writes the usage windows of a poll, and deletes the account's other windows. A poll is the whole picture of an
+   * account, so a window it omits, such as the 5-hour window of an Ultra plan, no longer exists.
+   */
+  replaceUsageWindows(subscriptionAccountName: string, usageWindows: SubscriptionAccountUsageWindow[], checkedAt: string): void {
+    const deleteOtherUsageWindows = this.database.prepare(
+      `DELETE FROM subscription_account_usage_windows
+       WHERE subscription_account_name = ? AND usage_window_name NOT IN (SELECT value FROM json_each(?))`,
+    );
+    this.database.exec('BEGIN');
+    try {
+      deleteOtherUsageWindows.run(subscriptionAccountName, JSON.stringify(usageWindows.map((usageWindow) => usageWindow.usageWindowName)));
+      this.writeUsageWindows(subscriptionAccountName, usageWindows, checkedAt);
+      this.database.exec('COMMIT');
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  private writeUsageWindows(subscriptionAccountName: string, usageWindows: SubscriptionAccountUsageWindow[], checkedAt: string): void {
     const writeUsageWindow = this.database.prepare(
       `INSERT OR REPLACE INTO subscription_account_usage_windows (
         subscription_account_name, usage_window_name, utilization, resets_at, checked_at
       ) VALUES (?, ?, ?, ?, ?)`,
     );
-    this.database.exec('BEGIN');
-    try {
-      for (const usageWindow of usageWindows) {
-        writeUsageWindow.run(subscriptionAccountName, usageWindow.usageWindowName, usageWindow.utilization, usageWindow.resetsAt, checkedAt);
-      }
-      this.database.exec('COMMIT');
-    } catch (error) {
-      this.database.exec('ROLLBACK');
-      throw error;
+    for (const usageWindow of usageWindows) {
+      writeUsageWindow.run(subscriptionAccountName, usageWindow.usageWindowName, usageWindow.utilization, usageWindow.resetsAt, checkedAt);
     }
   }
 
