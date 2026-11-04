@@ -1,6 +1,13 @@
 import AppKit
 import SwiftUI
 
+/// One usage window of a subscription account, such as `7d`.
+struct SubscriptionAccountUsageWindow: Decodable {
+    let usageWindowName: String
+    /// ISO 8601, or null when the report gave no reset time.
+    let resetsAt: String?
+}
+
 /// The fields of one subscription account in `GET /_proxy/api/subscription-account-status` that the menu bar shows.
 struct SubscriptionAccountStatus: Decodable {
     let subscriptionAccountName: String
@@ -11,6 +18,7 @@ struct SubscriptionAccountStatus: Decodable {
     let blockedUntil: String?
     /// The window of the whole-account block, such as `five_hour` or `seven_day`.
     let blockedRateLimitWindow: String?
+    let usageWindows: [SubscriptionAccountUsageWindow]
 }
 
 struct SubscriptionAccountStatusResponse: Decodable {
@@ -98,7 +106,7 @@ final class SubscriptionAccountStatusModel: ObservableObject {
     }
 }
 
-let blockedUntilIsoFormatters: [ISO8601DateFormatter] = [
+let isoDateFormatters: [ISO8601DateFormatter] = [
     ISO8601DateFormatter(),
     {
         let fractionalSecondsFormatter = ISO8601DateFormatter()
@@ -107,15 +115,31 @@ let blockedUntilIsoFormatters: [ISO8601DateFormatter] = [
     }(),
 ]
 
+func parseIsoDate(_ isoTimestamp: String) -> Date? {
+    isoDateFormatters.lazy.compactMap { $0.date(from: isoTimestamp) }.first
+}
+
 /// Formats an ISO 8601 time as the local weekday and hour, for example "Tue 14:00".
 func formatBlockedUntil(_ blockedUntil: String) -> String {
-    guard let blockedUntilDate = blockedUntilIsoFormatters.lazy.compactMap({ $0.date(from: blockedUntil) }).first else {
+    guard let blockedUntilDate = parseIsoDate(blockedUntil) else {
         return blockedUntil
     }
     let localTimeFormatter = DateFormatter()
     localTimeFormatter.locale = Locale(identifier: "en_GB")
     localTimeFormatter.dateFormat = "EEE HH:mm"
     return localTimeFormatter.string(from: blockedUntilDate)
+}
+
+/// Formats the time until an ISO 8601 time in the form of the web UI: "3d 3h", "3h 5m" or "5m".
+func formatTimeUntil(_ isoTimestamp: String, now: Date = Date()) -> String? {
+    guard let date = parseIsoDate(isoTimestamp) else { return nil }
+    let totalMinutes = max(0, Int(date.timeIntervalSince(now) / 60))
+    let days = totalMinutes / 1440
+    let hours = (totalMinutes % 1440) / 60
+    let minutes = totalMinutes % 60
+    if days > 0 { return "\(days)d \(hours)h" }
+    if hours > 0 { return "\(hours)h \(minutes)m" }
+    return "\(minutes)m"
 }
 
 func describeSubscriptionAccount(_ subscriptionAccount: SubscriptionAccountStatus) -> String {
@@ -130,7 +154,12 @@ func describeSubscriptionAccount(_ subscriptionAccount: SubscriptionAccountStatu
         return "\(name): avoided, at the failover limit"
     }
     if let weeklyUtilization = subscriptionAccount.weeklyUtilization {
-        return "\(name): \(Int((weeklyUtilization * 100).rounded()))% weekly"
+        let weeklyUsage = "\(name): \(Int((weeklyUtilization * 100).rounded()))% weekly"
+        let weeklyResetsAt = subscriptionAccount.usageWindows.first { $0.usageWindowName == "7d" }?.resetsAt
+        if let weeklyResetsAt, let timeUntilReset = formatTimeUntil(weeklyResetsAt) {
+            return "\(weeklyUsage) (resets in \(timeUntilReset))"
+        }
+        return weeklyUsage
     }
     return "\(name): no weekly usage known"
 }
