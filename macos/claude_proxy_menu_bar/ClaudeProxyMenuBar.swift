@@ -181,6 +181,17 @@ func sortUsageWindows(_ usageWindows: [SubscriptionAccountUsageWindow]) -> [Subs
         .map(\.element)
 }
 
+/// The reset text of each window, as "Resets in 3d 23h". A window with the same text as the window above it gets an
+/// empty text, because the Fable window usually resets with the weekly window. A window without a reset time gets one too.
+func describeUsageWindowResets(_ usageWindows: [SubscriptionAccountUsageWindow]) -> [String] {
+    let resetTexts = usageWindows.map { usageWindow in
+        usageWindow.resetsAt.flatMap { formatTimeUntil($0) }.map { "Resets in \($0)" } ?? ""
+    }
+    return resetTexts.indices.map { index in
+        index > 0 && resetTexts[index] == resetTexts[index - 1] ? "" : resetTexts[index]
+    }
+}
+
 /// The state of the whole account, or nil when the proxy uses it as normal.
 func describeSubscriptionAccountBlock(_ subscriptionAccount: SubscriptionAccountStatus) -> String? {
     guard subscriptionAccount.isBlocked else { return nil }
@@ -227,8 +238,10 @@ struct SubscriptionAccountSection: View {
             if subscriptionAccount.loginState == "login_required" {
                 Text("Log in from the web UI").font(.callout).foregroundStyle(blockedSubscriptionAccountColour)
             } else {
+                let sortedUsageWindows = sortUsageWindows(subscriptionAccount.usageWindows)
+                let resetTexts = describeUsageWindowResets(sortedUsageWindows)
                 Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 6) {
-                    ForEach(sortUsageWindows(subscriptionAccount.usageWindows), id: \.usageWindowName) { usageWindow in
+                    ForEach(Array(sortedUsageWindows.enumerated()), id: \.element.usageWindowName) { windowIndex, usageWindow in
                         // The 5-hour and weekly bars are red when the proxy avoids the account, a model bar when it avoids the model.
                         let isAvoided = usageWindow.usageWindowName == "5h" || usageWindow.usageWindowName == "7d"
                             ? subscriptionAccount.isBlocked
@@ -243,7 +256,7 @@ struct SubscriptionAccountSection: View {
                             Text("\(Int((usageWindow.utilization * 100).rounded()))%")
                                 .font(.body.monospacedDigit())
                                 .frame(width: 44, alignment: .trailing)
-                            Text(usageWindow.resetsAt.flatMap { formatTimeUntil($0) }.map { "Resets in \($0)" } ?? "")
+                            Text(resetTexts[windowIndex])
                                 .font(.body.monospacedDigit())
                                 .frame(width: 140, alignment: .trailing)
                         }
