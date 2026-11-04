@@ -172,7 +172,8 @@ a {
   background: var(--gauge-fill);
 }
 
-.usage-window-bar-fill[data-is-full='true'] {
+.usage-window-bar-fill[data-is-full='true'],
+.usage-window-bar-fill[data-is-avoided='true'] {
   background: var(--block-red);
 }
 

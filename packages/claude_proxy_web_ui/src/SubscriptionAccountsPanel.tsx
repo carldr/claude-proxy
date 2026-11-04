@@ -119,9 +119,23 @@ function SubscriptionAccountCard({
         {subscriptionAccount.emailAddress && <span className="muted">{subscriptionAccount.emailAddress}</span>}
       </div>
       {sortUsageWindows(subscriptionAccount.usageWindows).map((usageWindow) => (
-        <UsageWindowBar key={usageWindow.usageWindowName} usageWindow={usageWindow} />
+        <UsageWindowBar
+          key={usageWindow.usageWindowName}
+          usageWindow={usageWindow}
+          // The 5h and 7d bars are red when the proxy avoids the account, a model bar when it avoids the model.
+          isAvoided={
+            usageWindow.usageWindowName === '5h' || usageWindow.usageWindowName === '7d'
+              ? subscriptionAccount.isBlocked
+              : subscriptionAccount.avoidedModelUsageWindowNames.includes(usageWindow.usageWindowName)
+          }
+        />
       ))}
       {subscriptionAccount.isBlocked && <div className="subscription-account-blocked">{describeBlock(subscriptionAccount.blockedUntil, subscriptionAccount.failoverUtilization)}</div>}
+      {subscriptionAccount.avoidedModelUsageWindowNames.map((modelUsageWindowName) => (
+        <div key={modelUsageWindowName} className="subscription-account-blocked">
+          Avoided for {modelUsageWindowName} requests
+        </div>
+      ))}
       <div className="subscription-account-actions">
         {isLoginRequired ? (
           <button onClick={() => onLogin(subscriptionAccount.subscriptionAccountName)}>Log in</button>
@@ -157,7 +171,7 @@ function SubscriptionAccountCard({
   );
 }
 
-function UsageWindowBar({ usageWindow }: { usageWindow: SubscriptionAccountUsageWindow }) {
+function UsageWindowBar({ usageWindow, isAvoided }: { usageWindow: SubscriptionAccountUsageWindow; isAvoided: boolean }) {
   const utilizationPercent = Math.round(usageWindow.utilization * 100);
   return (
     <div className="usage-window">
@@ -173,6 +187,7 @@ function UsageWindowBar({ usageWindow }: { usageWindow: SubscriptionAccountUsage
         <div
           className="usage-window-bar-fill"
           data-is-full={utilizationPercent >= 100}
+          data-is-avoided={isAvoided}
           style={{ width: `${Math.min(Math.max(usageWindow.utilization, 0), 1) * 100}%` }}
         />
       </div>
