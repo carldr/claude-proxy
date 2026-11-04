@@ -243,10 +243,9 @@ struct SubscriptionAccountSection: View {
                             Text("\(Int((usageWindow.utilization * 100).rounded()))%")
                                 .font(.body.monospacedDigit())
                                 .frame(width: 44, alignment: .trailing)
-                            Text(usageWindow.resetsAt.flatMap { formatTimeUntil($0) } ?? "")
+                            Text(usageWindow.resetsAt.flatMap { formatTimeUntil($0) }.map { "Resets in \($0)" } ?? "")
                                 .font(.body.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                                .frame(width: 70, alignment: .trailing)
+                                .frame(width: 140, alignment: .trailing)
                         }
                     }
                 }
@@ -294,7 +293,7 @@ struct SubscriptionAccountStatusPanel: View {
             }
         }
         .padding(12)
-        .frame(width: 380)
+        .frame(width: 420)
     }
 }
 
