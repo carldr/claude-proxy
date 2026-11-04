@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, mock, test } from 'node:test';
 import tls from 'node:tls';
 import { assertListenAddressNeedsPublicHostname, createClaudeProxyServer, isAcceptedRequest, makeClaudeProxyFilePrivate, type ClaudeProxyServer } from '../src/claude_proxy_server.ts';
 import { parseSubscriptionAccountUsageReport } from '../src/subscription_account_usage_monitor.ts';
+import { isUsageWindowOfModel } from '../src/subscription_account_router.ts';
 
 interface ReceivedUpstreamRequest {
   upstreamName: string;
@@ -191,6 +192,13 @@ test('refuses to start when another user owns a proxy file, and does not change 
     },
   );
   assert.equal(chmodCallCount, 0);
+});
+
+test('matches a model window to the model IDs of its model', () => {
+  assert.equal(isUsageWindowOfModel('Fable', 'claude-fable-5-1'), true);
+  assert.equal(isUsageWindowOfModel('Fable', 'claude-opus-5-5'), false);
+  assert.equal(isUsageWindowOfModel('opus', 'claude-opus-5-5'), true);
+  assert.equal(isUsageWindowOfModel('7d', 'claude-fable-5-1'), false);
 });
 
 test('parses five_hour, seven_day and per-model windows from the usage report', () => {
@@ -539,6 +547,24 @@ describe('claude-proxy', () => {
       await (await sendClaudeCodeRequest()).text();
       await (await sendClaudeCodeRequest()).text();
       assert.deepEqual(readUpstreamSubscriptionAccountNames(), ['Personal', 'Work']);
+    });
+
+    test('routes Fable requests away from an account at its Fable threshold, and keeps Opus requests on it', async () => {
+      await startProxy(respondFromPersonalAtUtilization({}), subscriptionAccountsYamlWithFailoverUtilization);
+      storeBothTestGrants();
+      claudeProxyServer.subscriptionAccountStore.mergeUsageWindows(
+        'Personal',
+        [
+          { usageWindowName: '7d', utilization: 0.6, resetsAt: new Date(Date.now() + 86400_000).toISOString() },
+          { usageWindowName: 'Fable', utilization: 0.98, resetsAt: new Date(Date.now() + 86400_000).toISOString() },
+        ],
+        new Date().toISOString(),
+      );
+      await (await sendClaudeCodeRequest({ ...claudeCodeRequestBody, model: 'claude-fable-5-1' })).text();
+      await (await sendClaudeCodeRequest()).text();
+      assert.deepEqual(readUpstreamSubscriptionAccountNames(), ['Work', 'Personal']);
+      const status = await readApi('subscription-account-status');
+      assert.equal(findStatusAccount(status, 'Personal').isBlocked, false);
     });
 
     test('routes away on the 5-hour window too', async () => {

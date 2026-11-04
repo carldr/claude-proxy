@@ -57,7 +57,7 @@ function buildSubscriptionAccountStatus(dependencies: WebApiHandlerDependencies)
         weeklyUtilization: usageWindows.find((usageWindow) => usageWindow.usageWindowName === '7d')?.utilization ?? null,
         isBlocked:
           wholeAccountBlock !== undefined ||
-          isSubscriptionAccountAboveFailoverUtilization(usageWindows, subscriptionAccount.failoverUtilization, new Date()),
+          isSubscriptionAccountAboveFailoverUtilization(usageWindows, subscriptionAccount.failoverUtilization, null, new Date()),
         blockedUntil: wholeAccountBlock?.blockedUntil ?? null,
         blockedRateLimitWindow: wholeAccountBlock?.rateLimitWindow ?? null,
         usageWindows,
