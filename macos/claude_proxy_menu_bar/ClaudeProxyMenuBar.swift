@@ -204,7 +204,7 @@ struct UsageBar: View {
                 Capsule().fill(colour).frame(width: geometry.size.width * min(max(fraction, 0), 1))
             }
         }
-        .frame(height: 6)
+        .frame(height: 8)
     }
 }
 
@@ -217,41 +217,45 @@ struct SubscriptionAccountSection: View {
         let avoidedModelUsageWindowNames = subscriptionAccount.avoidedModelUsageWindowNames ?? []
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                Circle().fill(accountColour).frame(width: 8, height: 8)
-                Text(subscriptionAccount.subscriptionAccountName).font(.headline)
+                Circle().fill(accountColour).frame(width: 10, height: 10)
+                Text(subscriptionAccount.subscriptionAccountName).font(.title3.bold())
                 Spacer()
                 if let emailAddress = subscriptionAccount.emailAddress {
-                    Text(emailAddress).font(.caption).foregroundStyle(.secondary)
+                    Text(emailAddress).font(.callout).foregroundStyle(.secondary)
                 }
             }
             if subscriptionAccount.loginState == "login_required" {
-                Text("Log in from the web UI").font(.caption).foregroundStyle(blockedSubscriptionAccountColour)
+                Text("Log in from the web UI").font(.callout).foregroundStyle(blockedSubscriptionAccountColour)
             } else {
-                Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 4) {
+                Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 6) {
                     ForEach(sortUsageWindows(subscriptionAccount.usageWindows), id: \.usageWindowName) { usageWindow in
                         // The 5-hour and weekly bars are red when the proxy avoids the account, a model bar when it avoids the model.
                         let isAvoided = usageWindow.usageWindowName == "5h" || usageWindow.usageWindowName == "7d"
                             ? subscriptionAccount.isBlocked
                             : avoidedModelUsageWindowNames.contains(usageWindow.usageWindowName)
+                        // The fixed widths of the text columns line up the bars of every account.
                         GridRow {
-                            Text(labelUsageWindow(usageWindow.usageWindowName)).font(.caption)
+                            Text(labelUsageWindow(usageWindow.usageWindowName))
+                                .frame(width: 60, alignment: .leading)
+                            // The bar takes the width that the other columns leave.
                             UsageBar(fraction: usageWindow.utilization, colour: isAvoided ? blockedSubscriptionAccountColour : accountColour)
-                                .frame(width: 120)
+                                .frame(maxWidth: .infinity)
                             Text("\(Int((usageWindow.utilization * 100).rounded()))%")
-                                .font(.caption.monospacedDigit())
-                                .gridColumnAlignment(.trailing)
+                                .font(.body.monospacedDigit())
+                                .frame(width: 44, alignment: .trailing)
                             Text(usageWindow.resetsAt.flatMap { formatTimeUntil($0) } ?? "")
-                                .font(.caption.monospacedDigit())
+                                .font(.body.monospacedDigit())
                                 .foregroundStyle(.secondary)
-                                .gridColumnAlignment(.trailing)
+                                .frame(width: 70, alignment: .trailing)
                         }
                     }
                 }
+                .frame(maxWidth: .infinity)
                 if let accountBlock = describeSubscriptionAccountBlock(subscriptionAccount) {
-                    Text(accountBlock).font(.caption).foregroundStyle(blockedSubscriptionAccountColour)
+                    Text(accountBlock).font(.callout).foregroundStyle(blockedSubscriptionAccountColour)
                 }
                 ForEach(avoidedModelUsageWindowNames, id: \.self) { modelUsageWindowName in
-                    Text("Avoided for \(modelUsageWindowName) requests").font(.caption).foregroundStyle(blockedSubscriptionAccountColour)
+                    Text("Avoided for \(modelUsageWindowName) requests").font(.callout).foregroundStyle(blockedSubscriptionAccountColour)
                 }
             }
         }
@@ -288,10 +292,9 @@ struct SubscriptionAccountStatusPanel: View {
                     NSApplication.shared.terminate(nil)
                 }
             }
-            .controlSize(.small)
         }
         .padding(12)
-        .frame(width: 320)
+        .frame(width: 380)
     }
 }
 
