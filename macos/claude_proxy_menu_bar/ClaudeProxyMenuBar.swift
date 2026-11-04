@@ -1,9 +1,11 @@
 import AppKit
 import SwiftUI
 
-/// One usage window of a subscription account, such as `7d`.
+/// One usage window of a subscription account, such as `7d` or `Fable`.
 struct SubscriptionAccountUsageWindow: Decodable {
     let usageWindowName: String
+    /// A fraction from 0 to 1.
+    let utilization: Double
     /// ISO 8601, or null when the report gave no reset time.
     let resetsAt: String?
 }
@@ -19,6 +21,23 @@ struct SubscriptionAccountStatus: Decodable {
     /// The window of the whole-account block, such as `five_hour` or `seven_day`.
     let blockedRateLimitWindow: String?
     let usageWindows: [SubscriptionAccountUsageWindow]
+    /// The model windows for whose model the proxy avoids the account. Optional, because an older proxy omits it.
+    let avoidedModelUsageWindowNames: [String]?
+}
+
+extension SubscriptionAccountStatus {
+    /// The model window that the inner disc shows: an avoided one first, else the fullest one. Nil without a model window.
+    var shownModelUsageWindow: SubscriptionAccountUsageWindow? {
+        let avoidedNames = avoidedModelUsageWindowNames ?? []
+        return usageWindows
+            .filter { $0.usageWindowName != "5h" && $0.usageWindowName != "7d" }
+            .max { first, second in
+                let firstIsAvoided = avoidedNames.contains(first.usageWindowName)
+                let secondIsAvoided = avoidedNames.contains(second.usageWindowName)
+                if firstIsAvoided != secondIsAvoided { return secondIsAvoided }
+                return first.utilization < second.utilization
+            }
+    }
 }
 
 struct SubscriptionAccountStatusResponse: Decodable {
@@ -241,31 +260,56 @@ func makeSubscriptionAccountPiesImage(subscriptionAccounts: [SubscriptionAccount
     return piesImage
 }
 
-func drawSubscriptionAccountPie(subscriptionAccount: SubscriptionAccountStatus, in pieRect: NSRect) {
-    let outlinePath = NSBezierPath(ovalIn: pieRect.insetBy(dx: 0.5, dy: 0.5))
-    let outlineColour = NSColor.black.withAlphaComponent(0.6)
+/// The hole in the weekly pie leaves a ring of 3 points. The model disc sits in the hole with a gap of 1 point.
+let modelUsageHoleDiameter: CGFloat = 10
+let modelUsageDiscDiameter: CGFloat = 8
 
+/// Draws the weekly window as the outer pie, or ring, and the model window, such as Fable, as the inner disc.
+/// Each part turns red on its own: the ring when the proxy avoids the account, the disc when it avoids the model.
+func drawSubscriptionAccountPie(subscriptionAccount: SubscriptionAccountStatus, in pieRect: NSRect) {
     if subscriptionAccount.loginState == "login_required" {
-        NSColor.gray.withAlphaComponent(0.25).setFill()
-        outlinePath.fill()
-        outlineColour.setStroke()
-        outlinePath.lineWidth = 1
-        outlinePath.stroke()
+        drawUsagePie(fraction: 0, colour: .gray, in: pieRect)
         return
     }
 
-    let pieColourHex = subscriptionAccount.isBlocked ? blockedSubscriptionAccountColourHex : subscriptionAccount.colour
-    let pieColour = parseHexColour(pieColourHex) ?? .gray
-    pieColour.withAlphaComponent(0.25).setFill()
-    outlinePath.fill()
+    let accountColour = parseHexColour(subscriptionAccount.colour) ?? .gray
+    let blockedColour = parseHexColour(blockedSubscriptionAccountColourHex) ?? .red
 
     // A block for a weekly window draws a full pie, because the stored weekly utilization can be below 1.
     let isBlockedForWeeklyWindow = subscriptionAccount.blockedRateLimitWindow?.hasPrefix("seven_day") ?? false
-    let weeklyFraction = isBlockedForWeeklyWindow ? 1 : min(max(subscriptionAccount.weeklyUtilization ?? 0, 0), 1)
-    if weeklyFraction >= 1 {
-        pieColour.setFill()
+    let weeklyFraction = isBlockedForWeeklyWindow ? 1 : subscriptionAccount.weeklyUtilization ?? 0
+    drawUsagePie(fraction: weeklyFraction, colour: subscriptionAccount.isBlocked ? blockedColour : accountColour, in: pieRect)
+
+    guard let modelUsageWindow = subscriptionAccount.shownModelUsageWindow else { return }
+    let holeRect = centredSquare(in: pieRect, diameter: modelUsageHoleDiameter)
+    NSGraphicsContext.current?.compositingOperation = .clear
+    NSBezierPath(ovalIn: holeRect).fill()
+    NSGraphicsContext.current?.compositingOperation = .sourceOver
+
+    // A model that the proxy avoids draws a full disc, because a rejection can come below the stored utilization.
+    let isModelAvoided = (subscriptionAccount.avoidedModelUsageWindowNames ?? []).contains(modelUsageWindow.usageWindowName)
+    drawUsagePie(
+        fraction: isModelAvoided ? 1 : modelUsageWindow.utilization,
+        colour: isModelAvoided ? blockedColour : accountColour,
+        in: centredSquare(in: pieRect, diameter: modelUsageDiscDiameter)
+    )
+}
+
+func centredSquare(in rect: NSRect, diameter: CGFloat) -> NSRect {
+    NSRect(x: rect.midX - diameter / 2, y: rect.midY - diameter / 2, width: diameter, height: diameter)
+}
+
+/// Draws a pie with a pale track, a wedge clockwise from the top for the fraction, and a dark outline.
+func drawUsagePie(fraction: Double, colour: NSColor, in pieRect: NSRect) {
+    let outlinePath = NSBezierPath(ovalIn: pieRect.insetBy(dx: 0.5, dy: 0.5))
+    colour.withAlphaComponent(0.25).setFill()
+    outlinePath.fill()
+
+    let clampedFraction = min(max(fraction, 0), 1)
+    if clampedFraction >= 1 {
+        colour.setFill()
         outlinePath.fill()
-    } else if weeklyFraction > 0 {
+    } else if clampedFraction > 0 {
         let wedgePath = NSBezierPath()
         let pieCentre = NSPoint(x: pieRect.midX, y: pieRect.midY)
         wedgePath.move(to: pieCentre)
@@ -273,15 +317,15 @@ func drawSubscriptionAccountPie(subscriptionAccount: SubscriptionAccountStatus, 
             withCenter: pieCentre,
             radius: pieRect.width / 2 - 0.5,
             startAngle: 90,
-            endAngle: 90 - 360 * weeklyFraction,
+            endAngle: 90 - 360 * clampedFraction,
             clockwise: true
         )
         wedgePath.close()
-        pieColour.setFill()
+        colour.setFill()
         wedgePath.fill()
     }
 
-    outlineColour.setStroke()
+    NSColor.black.withAlphaComponent(0.6).setStroke()
     outlinePath.lineWidth = 1
     outlinePath.stroke()
 }
