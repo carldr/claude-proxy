@@ -142,6 +142,13 @@ func formatTimeUntil(_ isoTimestamp: String, now: Date = Date()) -> String? {
     return "\(minutes)m"
 }
 
+/// The time to the reset of the weekly window, as "Resets in 3d 23h", or nil without a known reset time.
+func describeWeeklyReset(_ subscriptionAccount: SubscriptionAccountStatus) -> String? {
+    guard let weeklyResetsAt = subscriptionAccount.usageWindows.first(where: { $0.usageWindowName == "7d" })?.resetsAt,
+          let timeUntilReset = formatTimeUntil(weeklyResetsAt) else { return nil }
+    return "Resets in \(timeUntilReset)"
+}
+
 func describeSubscriptionAccount(_ subscriptionAccount: SubscriptionAccountStatus) -> String {
     let name = subscriptionAccount.subscriptionAccountName
     if subscriptionAccount.loginState == "login_required" {
@@ -154,12 +161,7 @@ func describeSubscriptionAccount(_ subscriptionAccount: SubscriptionAccountStatu
         return "\(name): avoided, at the failover limit"
     }
     if let weeklyUtilization = subscriptionAccount.weeklyUtilization {
-        let weeklyUsage = "\(name): \(Int((weeklyUtilization * 100).rounded()))% weekly"
-        let weeklyResetsAt = subscriptionAccount.usageWindows.first { $0.usageWindowName == "7d" }?.resetsAt
-        if let weeklyResetsAt, let timeUntilReset = formatTimeUntil(weeklyResetsAt) {
-            return "\(weeklyUsage) (resets in \(timeUntilReset))"
-        }
-        return weeklyUsage
+        return "\(name): \(Int((weeklyUtilization * 100).rounded()))% weekly"
     }
     return "\(name): no weekly usage known"
 }
@@ -169,16 +171,21 @@ struct SubscriptionAccountStatusMenu: View {
 
     var body: some View {
         if let subscriptionAccounts = subscriptionAccountStatusModel.subscriptionAccounts {
+            // One section per account: its usage line, its reset line, then a divider.
             ForEach(subscriptionAccounts, id: \.subscriptionAccountName) { subscriptionAccount in
                 Text(describeSubscriptionAccount(subscriptionAccount))
+                if let weeklyReset = describeWeeklyReset(subscriptionAccount) {
+                    Text(weeklyReset)
+                }
+                Divider()
             }
         } else {
             Text("claude-proxy does not answer on port 4100")
             if let loadError = subscriptionAccountStatusModel.loadError {
                 Text(loadError)
             }
+            Divider()
         }
-        Divider()
         Button("Open web UI") {
             NSWorkspace.shared.open(SubscriptionAccountStatusModel.readWebUiUrl())
         }
