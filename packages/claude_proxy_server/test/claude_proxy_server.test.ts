@@ -565,6 +565,8 @@ describe('claude-proxy', () => {
       assert.deepEqual(readUpstreamSubscriptionAccountNames(), ['Work', 'Personal']);
       const status = await readApi('subscription-account-status');
       assert.equal(findStatusAccount(status, 'Personal').isBlocked, false);
+      assert.deepEqual(findStatusAccount(status, 'Personal').avoidedModelUsageWindowNames, ['Fable']);
+      assert.deepEqual(findStatusAccount(status, 'Work').avoidedModelUsageWindowNames, []);
     });
 
     test('routes away on the 5-hour window too', async () => {
@@ -1446,6 +1448,22 @@ describe('claude-proxy', () => {
       const clearedStatus = findStatusAccount(await readApi('subscription-account-status'), 'Personal');
       assert.equal(clearedStatus.isBlocked, false);
       assert.equal(clearedStatus.blockedUntil, null);
+    });
+
+    test('names a model window as avoided while a rejection blocks its model, and keeps the account unblocked', async () => {
+      await startProxy(respondWithWeeklyUsage({ [personalAuthorization]: 40 }));
+      storeTestGrant('Personal', 'personal-token');
+      const store = claudeProxyServer.subscriptionAccountStore;
+      store.mergeUsageWindows('Personal', [{ usageWindowName: 'Fable', utilization: 0.91, resetsAt: null }], new Date().toISOString());
+      store.writeLimitBlock({
+        subscriptionAccountName: 'Personal',
+        blockedModel: 'claude-fable-5-1',
+        rateLimitWindow: 'seven_day_fable',
+        blockedUntil: new Date(Date.now() + 86400_000).toISOString(),
+      });
+      const status = findStatusAccount(await readApi('subscription-account-status'), 'Personal');
+      assert.equal(status.isBlocked, false);
+      assert.deepEqual(status.avoidedModelUsageWindowNames, ['Fable']);
     });
 
     test('keeps a whole-account block while the usage poll shows no room', async () => {

@@ -20,11 +20,22 @@ export function isUsageWindowOfModel(usageWindowName: string, model: string): bo
 }
 
 /**
+ * Returns true when the usage window is at or above the failover utilization.
+ * A failover utilization of 1 turns the check off, because a window at 1.00 can still take requests.
+ * A window whose reset time has passed does not count, because its stored utilization is out of date.
+ */
+export function isUsageWindowAboveFailoverUtilization(usageWindow: SubscriptionAccountUsageWindow, failoverUtilization: number, now: Date): boolean {
+  return (
+    failoverUtilization < 1 &&
+    usageWindow.utilization >= failoverUtilization &&
+    (usageWindow.resetsAt === null || usageWindow.resetsAt > now.toISOString())
+  );
+}
+
+/**
  * Returns true when a usage window that counts the request is at or above the failover utilization.
  * The 5-hour and the weekly windows count every request. A model window counts only the requests of its model,
  * so an account at its Fable threshold still takes Opus requests. A null model counts only the 5-hour and weekly windows.
- * A failover utilization of 1 turns the check off, because a window at 1.00 can still take requests.
- * A window whose reset time has passed does not count, because its stored utilization is out of date.
  * The router and the subscription account status both use this rule.
  */
 export function isSubscriptionAccountAboveFailoverUtilization(
@@ -33,15 +44,12 @@ export function isSubscriptionAccountAboveFailoverUtilization(
   model: string | null,
   now: Date,
 ): boolean {
-  if (failoverUtilization >= 1) return false;
-  const nowIsoString = now.toISOString();
   return usageWindows.some(
     (usageWindow) =>
       (usageWindow.usageWindowName === '5h' ||
         usageWindow.usageWindowName === '7d' ||
         (model !== null && isUsageWindowOfModel(usageWindow.usageWindowName, model))) &&
-      usageWindow.utilization >= failoverUtilization &&
-      (usageWindow.resetsAt === null || usageWindow.resetsAt > nowIsoString),
+      isUsageWindowAboveFailoverUtilization(usageWindow, failoverUtilization, now),
   );
 }
 

@@ -3,7 +3,11 @@ import type { ProxiedRequestFilters, RequestDatabase } from './request_database.
 import type { SubscriptionAccountLoginHandler } from './subscription_account_login_handler.ts';
 import type { SubscriptionAccountStore, SubscriptionAccountUsageWindow } from './subscription_account_store.ts';
 import type { SubscriptionAccountUsageMonitor } from './subscription_account_usage_monitor.ts';
-import { isSubscriptionAccountAboveFailoverUtilization } from './subscription_account_router.ts';
+import {
+  isSubscriptionAccountAboveFailoverUtilization,
+  isUsageWindowAboveFailoverUtilization,
+  isUsageWindowOfModel,
+} from './subscription_account_router.ts';
 import type { SubscriptionAccountsConfig } from './subscription_accounts_config.ts';
 
 export const webApiPathPrefix = '/_proxy/api/';
@@ -31,6 +35,11 @@ export interface SubscriptionAccountStatus {
     /** The window of the whole-account block, such as `five_hour` or `seven_day`. Null when no such block is active. */
     blockedRateLimitWindow: string | null;
     usageWindows: SubscriptionAccountUsageWindow[];
+    /**
+     * The model windows, such as `Fable`, for whose model the proxy avoids this account or tries it last:
+     * the window is at the failover utilization, or a rejection blocks its model.
+     */
+    avoidedModelUsageWindowNames: string[];
     usageCheckedAt: string | null;
     /** The fraction of a 5-hour or weekly window at which the proxy avoids this account. 1 means no threshold. */
     failoverUtilization: number;
@@ -49,6 +58,20 @@ function buildSubscriptionAccountStatus(dependencies: WebApiHandlerDependencies)
       const wholeAccountBlock = activeLimitBlocks.find(
         (limitBlock) => limitBlock.subscriptionAccountName === subscriptionAccount.name && limitBlock.blockedModel === '',
       );
+      const now = new Date();
+      const avoidedModelUsageWindowNames = usageWindows
+        .filter((usageWindow) => usageWindow.usageWindowName !== '5h' && usageWindow.usageWindowName !== '7d')
+        .filter(
+          (usageWindow) =>
+            isUsageWindowAboveFailoverUtilization(usageWindow, subscriptionAccount.failoverUtilization, now) ||
+            activeLimitBlocks.some(
+              (limitBlock) =>
+                limitBlock.subscriptionAccountName === subscriptionAccount.name &&
+                limitBlock.blockedModel !== '' &&
+                isUsageWindowOfModel(usageWindow.usageWindowName, limitBlock.blockedModel),
+            ),
+        )
+        .map((usageWindow) => usageWindow.usageWindowName);
       return {
         subscriptionAccountName: subscriptionAccount.name,
         colour: subscriptionAccount.colour,
@@ -61,6 +84,7 @@ function buildSubscriptionAccountStatus(dependencies: WebApiHandlerDependencies)
         blockedUntil: wholeAccountBlock?.blockedUntil ?? null,
         blockedRateLimitWindow: wholeAccountBlock?.rateLimitWindow ?? null,
         usageWindows,
+        avoidedModelUsageWindowNames,
         usageCheckedAt: checkedAt,
         failoverUtilization: subscriptionAccount.failoverUtilization,
       };

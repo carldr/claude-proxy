@@ -17,6 +17,8 @@ export interface SubscriptionAccountStatus {
   /** The window of the whole-account block, such as `five_hour` or `seven_day`. Null when no such block is active. */
   blockedRateLimitWindow: string | null;
   usageWindows: SubscriptionAccountUsageWindow[];
+  /** The model windows, such as `Fable`, for whose model the proxy avoids this account or tries it last. */
+  avoidedModelUsageWindowNames: string[];
   usageCheckedAt: string | null;
   /** The fraction of a 5-hour or weekly window at which the proxy avoids this account. 1 means no threshold. */
   failoverUtilization: number;
